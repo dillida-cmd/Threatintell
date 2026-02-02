@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IP Lookup - Find IP Address Details</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>IP Address Lookup</h1>
+      <p class="subtitle">Get detailed information about any IP address</p>
+    </header>
+
+    <div class="search-section">
+      <div class="your-ip">
+        <span>Your IP:</span>
+        <strong id="visitor-ip">Loading...</strong>
+        <button id="lookup-my-ip" class="btn-secondary">Lookup My IP</button>
+      </div>
+
+      <div class="search-box">
+        <input type="text" id="ip-input" placeholder="Enter an IP address (e.g., 8.8.8.8)">
+        <button id="lookup-btn" class="btn-primary">Lookup</button>
+      </div>
+    </div>
+
+    <div id="results" class="results hidden">
+      <div class="result-header">
+        <h2>Results for <span id="result-ip"></span></h2>
+        <span id="country-flag"></span>
+      </div>
+
+      <div class="threat-score-section" id="threat-section">
+        <div class="threat-score-card">
+          <h3>Threat Score</h3>
+          <div class="score-container">
+            <div class="score-circle" id="score-circle">
+              <span class="score-value" id="score-value">0</span>
+              <span class="score-label">/ 100</span>
+            </div>
+            <div class="risk-level" id="risk-level">Low Risk</div>
+          </div>
+          <div class="threat-summary" id="threat-summary"></div>
+        </div>
+      </div>
+
+      <div class="cards">
+        <div class="card">
+          <h3>Location</h3>
+          <div class="card-content" id="location-info"></div>
+        </div>
+
+        <div class="card">
+          <h3>Network</h3>
+          <div class="card-content" id="network-info"></div>
+        </div>
+
+        <div class="card">
+          <h3>Security</h3>
+          <div class="card-content" id="security-info"></div>
+        </div>
+
+        <div class="card">
+          <h3>Threat Intelligence</h3>
+          <div class="card-content" id="threat-info"></div>
+        </div>
+
+        <div class="card" id="categories-card">
+          <h3>Attack Categories</h3>
+          <div class="card-content" id="categories-info"></div>
+        </div>
+
+        <div class="card" id="reports-card">
+          <h3>Recent Reports</h3>
+          <div class="card-content" id="reports-info"></div>
+        </div>
+
+        <div class="card">
+          <h3>Map</h3>
+          <div class="card-content" id="map-container">
+            <iframe id="map-frame" src="" frameborder="0" allowfullscreen></iframe>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="error" class="error hidden"></div>
+    <div id="loading" class="loading hidden">
+      <div class="spinner"></div>
+      <p>Looking up IP information...</p>
+    </div>
+  </div>
+
+  <footer>
+    <p>IP data provided by <a href="http://ip-api.com" target="_blank">ip-api.com</a></p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
