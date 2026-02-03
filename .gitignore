@@ -1,9 +1,12 @@
 # Encryption keys (sensitive - never commit)
 .msb_master_key
 .msb_key_salt
+.encryption_key
 
-# API Keys (sensitive - never commit)
+# API Keys and Config (sensitive - never commit)
 api_keys.json
+.env
+config.py
 
 # Database
 analysis_results.db
