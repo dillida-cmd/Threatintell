@@ -36,6 +36,65 @@ except ImportError:
         PDF_ENCRYPTION = None
 
 
+# ============ DEFANGING FUNCTIONS ============
+# Prevent accidental clicks on malicious URLs/IPs in PDF reports
+
+def defang_url(url: str) -> str:
+    """Defang URL: http://evil.com -> hxxp://evil[.]com"""
+    if not url:
+        return url
+    import re
+    result = url
+    result = re.sub(r'^http:', 'hxxp:', result, flags=re.IGNORECASE)
+    result = re.sub(r'^https:', 'hxxps:', result, flags=re.IGNORECASE)
+    result = re.sub(r'^ftp:', 'fxp:', result, flags=re.IGNORECASE)
+    result = result.replace('.', '[.]')
+    return result
+
+def defang_ip(ip: str) -> str:
+    """Defang IP: 192.168.1.1 -> 192[.]168[.]1[.]1"""
+    if not ip:
+        return ip
+    return ip.replace('.', '[.]')
+
+def defang_domain(domain: str) -> str:
+    """Defang domain: evil.com -> evil[.]com"""
+    if not domain:
+        return domain
+    return domain.replace('.', '[.]')
+
+def defang_email(email: str) -> str:
+    """Defang email: user@evil.com -> user[@]evil[.]com"""
+    if not email:
+        return email
+    return email.replace('@', '[@]').replace('.', '[.]')
+
+def is_ip_address(s: str) -> bool:
+    """Check if string looks like an IP address"""
+    import re
+    ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+    return bool(re.match(ipv4_pattern, s))
+
+def is_url(s: str) -> bool:
+    """Check if string looks like a URL"""
+    import re
+    return bool(re.match(r'^(https?|ftp)://', s, re.IGNORECASE))
+
+def smart_defang(value: str) -> str:
+    """Auto-detect type and apply appropriate defanging"""
+    if not value:
+        return value
+    if is_url(value):
+        return defang_url(value)
+    elif is_ip_address(value):
+        return defang_ip(value)
+    elif '@' in value:
+        return defang_email(value)
+    elif '.' in value and ' ' not in value:
+        return defang_domain(value)
+    return value
+
+
 def check_pdf_available() -> Dict[str, bool]:
     """Check PDF generation capabilities"""
     return {
@@ -183,7 +242,7 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
 
         if is_ip_analysis:
             ip_addr = analysis_result.get('ip', analysis_result.get('basic', {}).get('ip', 'N/A'))
-            target_info = [['Analysis Type:', 'IP ADDRESS INVESTIGATION'], ['Target IP:', ip_addr]]
+            target_info = [['Analysis Type:', 'IP ADDRESS INVESTIGATION'], ['Target IP:', defang_ip(ip_addr)]]
             basic = analysis_result.get('basic', {})
             if basic.get('location', {}).get('country'):
                 target_info.append(['Country:', f"{basic['location'].get('country', '')} ({basic['location'].get('countryCode', '')})"])
@@ -191,9 +250,11 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
                 target_info.append(['ISP:', basic['network']['isp']])
         elif is_url_analysis:
             url = analysis_result.get('url', 'N/A')
-            target_info = [['Analysis Type:', 'URL THREAT ANALYSIS'], ['Target URL:', url[:70] + '...' if len(url) > 70 else url]]
+            defanged_url = defang_url(url)
+            target_info = [['Analysis Type:', 'URL THREAT ANALYSIS'], ['Target URL:', defanged_url[:80] + '...' if len(defanged_url) > 80 else defanged_url]]
             if analysis_result.get('finalUrl') and analysis_result.get('finalUrl') != url:
-                target_info.append(['Final URL:', analysis_result['finalUrl'][:70]])
+                final_defanged = defang_url(analysis_result['finalUrl'])
+                target_info.append(['Final URL:', final_defanged[:80]])
         elif is_hash_analysis:
             hash_val = analysis_result.get('hash', 'N/A')
             target_info = [['Analysis Type:', 'FILE HASH LOOKUP'], ['Hash:', hash_val]]
@@ -305,7 +366,7 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
                 if network.get('org'):
                     net_data.append(['Organization:', network['org']])
                 if basic.get('domain'):
-                    net_data.append(['Domain:', basic['domain']])
+                    net_data.append(['Domain:', defang_domain(basic['domain'])])
 
                 if net_data:
                     net_table = Table(net_data, colWidths=[1.5*inch, 5*inch])
@@ -406,7 +467,8 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
                 story.append(Paragraph("🖥️ Infrastructure (Shodan)", heading_style))
 
                 if shodan.get('hostnames'):
-                    story.append(Paragraph(f"<b>Hostnames:</b> {', '.join(shodan['hostnames'][:5])}", body_style))
+                    defanged_hostnames = [defang_domain(h) for h in shodan['hostnames'][:5]]
+                    story.append(Paragraph(f"<b>Hostnames:</b> {', '.join(defanged_hostnames)}", body_style))
                 if shodan.get('ports'):
                     story.append(Paragraph(f"<b>Open Ports:</b> {', '.join(map(str, shodan['ports'][:10]))}", body_style))
                 if shodan.get('vulns'):
@@ -477,7 +539,7 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
                 story.append(Paragraph("👽 AlienVault OTX Intelligence", heading_style))
                 story.append(Paragraph(f"<b>Threat Reports:</b> {otx.get('pulseCount', 0)}", body_style))
                 if otx.get('domain'):
-                    story.append(Paragraph(f"<b>Domain:</b> {otx['domain']}", body_style))
+                    story.append(Paragraph(f"<b>Domain:</b> {defang_domain(otx['domain'])}", body_style))
 
                 # Validation messages
                 if otx.get('validation'):
@@ -566,11 +628,21 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
             # Headers
             headers = analysis_result.get('headers', {})
             if headers:
-                story.append(Paragraph("Email Headers", heading_style))
+                story.append(Paragraph("Email Headers (defanged)", heading_style))
                 header_data = []
                 for key in ['from', 'to', 'subject', 'date', 'return-path', 'x-originating-ip']:
                     if headers.get(key):
-                        header_data.append([key.title() + ':', str(headers[key])[:80]])
+                        value = str(headers[key])[:80]
+                        # Defang email addresses and IPs in headers
+                        if key in ['from', 'to', 'return-path']:
+                            value = defang_email(value)
+                        elif key == 'x-originating-ip':
+                            # Extract IP from brackets if present
+                            import re
+                            ip_match = re.search(r'\[?([\d\.]+)\]?', value)
+                            if ip_match:
+                                value = defang_ip(ip_match.group(1))
+                        header_data.append([key.title() + ':', value])
 
                 if header_data:
                     header_table = Table(header_data, colWidths=[1.5*inch, 5*inch])
@@ -699,7 +771,7 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
             # Extracted IOCs
             iocs = analysis_result.get('iocs', {})
             if iocs:
-                story.append(Paragraph("Extracted IOCs", heading_style))
+                story.append(Paragraph("Extracted IOCs (defanged)", heading_style))
 
                 ioc_summary = iocs.get('summary', {})
                 story.append(Paragraph(
@@ -710,21 +782,21 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
                     body_style
                 ))
 
-                # List IPs
+                # List IPs (defanged)
                 ips = iocs.get('ips', [])
                 if ips:
                     story.append(Paragraph("IP Addresses:", subheading_style))
                     for ip in ips[:15]:
-                        story.append(Paragraph(f"  • {ip}", body_style))
+                        story.append(Paragraph(f"  • {defang_ip(ip)}", body_style))
                     if len(ips) > 15:
                         story.append(Paragraph(f"  ... and {len(ips) - 15} more", body_style))
 
-                # List domains
+                # List domains (defanged)
                 domains = iocs.get('domains', [])
                 if domains:
                     story.append(Paragraph("Domains:", subheading_style))
                     for domain in domains[:15]:
-                        story.append(Paragraph(f"  • {domain}", body_style))
+                        story.append(Paragraph(f"  • {defang_domain(domain)}", body_style))
                     if len(domains) > 15:
                         story.append(Paragraph(f"  ... and {len(domains) - 15} more", body_style))
 
@@ -734,23 +806,25 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
             if file_type == 'sandbox_url':
                 redirect_chain = analysis_result.get('redirectChain', [])
                 if redirect_chain:
-                    story.append(Paragraph("Redirect Chain", heading_style))
+                    story.append(Paragraph("Redirect Chain (defanged)", heading_style))
                     for i, redirect in enumerate(redirect_chain):
+                        redirect_url = defang_url(redirect.get('url', 'N/A'))
                         story.append(Paragraph(
-                            f"{i+1}. [{redirect.get('statusCode')}] {redirect.get('url', 'N/A')[:60]}",
+                            f"{i+1}. [{redirect.get('statusCode')}] {redirect_url[:70]}",
                             body_style
                         ))
                     story.append(Spacer(1, 10))
 
                 if analysis_result.get('finalUrl'):
-                    story.append(Paragraph(f"Final URL: {analysis_result['finalUrl'][:70]}", body_style))
+                    story.append(Paragraph(f"Final URL: {defang_url(analysis_result['finalUrl'][:70])}", body_style))
 
-        # URLs Found
+        # URLs Found (defanged)
         urls = analysis_result.get('urls', [])
         if urls:
-            story.append(Paragraph("URLs Detected", heading_style))
+            story.append(Paragraph("URLs Detected (defanged)", heading_style))
             for url in urls[:20]:  # Limit to 20
-                url_text = url if len(url) < 70 else url[:67] + "..."
+                defanged = defang_url(url)
+                url_text = defanged if len(defanged) < 80 else defanged[:77] + "..."
                 story.append(Paragraph(f"• {url_text}", body_style))
             if len(urls) > 20:
                 story.append(Paragraph(f"... and {len(urls) - 20} more URLs", body_style))
@@ -789,15 +863,16 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
                 story.append(Paragraph(f"Malicious IOCs Found: {summary.get('maliciousIOCs', 0)}", body_style))
                 story.append(Spacer(1, 10))
 
-            # URL investigations
+            # URL investigations (defanged)
             url_invs = ioc_inv.get('urls', [])
             if url_invs:
-                story.append(Paragraph("URL Investigation Details", subheading_style))
+                story.append(Paragraph("URL Investigation Details (defanged)", subheading_style))
                 for url_inv in url_invs[:10]:
                     url_summary = url_inv.get('summary', {})
                     status = "MALICIOUS" if url_summary.get('isMalicious') else "Clean"
                     risk = url_summary.get('riskScore', 0)
-                    story.append(Paragraph(f"• [{status}] (Risk: {risk}) {url_inv.get('url', 'N/A')[:50]}", body_style))
+                    inv_url = defang_url(url_inv.get('url', 'N/A'))
+                    story.append(Paragraph(f"• [{status}] (Risk: {risk}) {inv_url[:60]}", body_style))
                 story.append(Spacer(1, 10))
 
         # Screenshots section
@@ -811,11 +886,13 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
                         img_data = base64.b64decode(screenshot['screenshot_base64'])
                         img_buffer = io.BytesIO(img_data)
                         img = Image(img_buffer, width=6*inch, height=4*inch)
-                        story.append(Paragraph(f"URL: {screenshot.get('url', 'N/A')}", body_style))
+                        screenshot_url = defang_url(screenshot.get('url', 'N/A'))
+                        story.append(Paragraph(f"URL: {screenshot_url}", body_style))
                         story.append(img)
                         story.append(Spacer(1, 15))
                     except Exception as e:
-                        story.append(Paragraph(f"Screenshot for {screenshot.get('url', 'N/A')}: Error loading image", body_style))
+                        screenshot_url = defang_url(screenshot.get('url', 'N/A'))
+                        story.append(Paragraph(f"Screenshot for {screenshot_url}: Error loading image", body_style))
 
         # Footer
         story.append(Spacer(1, 30))
