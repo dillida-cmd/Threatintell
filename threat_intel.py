@@ -89,6 +89,95 @@ def init_cache_db():
                 VALUES (0, 0, 0, ?)
             ''', (datetime.now().isoformat(),))
 
+        # =============================================================================
+        # Separate IOC Tables for SIEM/Sentinel Export
+        # =============================================================================
+
+        # IP IOC Table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ioc_ips (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip TEXT NOT NULL UNIQUE,
+                is_malicious BOOLEAN DEFAULT FALSE,
+                risk_score INTEGER DEFAULT 0,
+                abuse_score INTEGER DEFAULT 0,
+                total_reports INTEGER DEFAULT 0,
+                is_tor BOOLEAN DEFAULT FALSE,
+                is_proxy BOOLEAN DEFAULT FALSE,
+                is_vpn BOOLEAN DEFAULT FALSE,
+                is_hosting BOOLEAN DEFAULT FALSE,
+                country TEXT,
+                country_code TEXT,
+                city TEXT,
+                isp TEXT,
+                org TEXT,
+                asn TEXT,
+                tags TEXT,
+                malware_families TEXT,
+                threat_types TEXT,
+                first_seen TEXT,
+                last_seen TEXT,
+                last_updated TEXT NOT NULL,
+                raw_data TEXT
+            )
+        ''')
+
+        # URL IOC Table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ioc_urls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL UNIQUE,
+                domain TEXT,
+                is_malicious BOOLEAN DEFAULT FALSE,
+                risk_score INTEGER DEFAULT 0,
+                vt_malicious INTEGER DEFAULT 0,
+                vt_suspicious INTEGER DEFAULT 0,
+                vt_harmless INTEGER DEFAULT 0,
+                urlhaus_status TEXT,
+                threat_type TEXT,
+                malware_family TEXT,
+                tags TEXT,
+                categories TEXT,
+                first_seen TEXT,
+                last_seen TEXT,
+                last_updated TEXT NOT NULL,
+                raw_data TEXT
+            )
+        ''')
+
+        # Hash IOC Table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ioc_hashes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hash_value TEXT NOT NULL UNIQUE,
+                hash_type TEXT,
+                is_malicious BOOLEAN DEFAULT FALSE,
+                risk_score INTEGER DEFAULT 0,
+                vt_malicious INTEGER DEFAULT 0,
+                vt_suspicious INTEGER DEFAULT 0,
+                vt_harmless INTEGER DEFAULT 0,
+                file_name TEXT,
+                file_type TEXT,
+                file_size INTEGER,
+                malware_family TEXT,
+                threat_type TEXT,
+                tags TEXT,
+                av_detections TEXT,
+                first_seen TEXT,
+                last_seen TEXT,
+                last_updated TEXT NOT NULL,
+                raw_data TEXT
+            )
+        ''')
+
+        # Create indexes for IOC tables
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ioc_ips_malicious ON ioc_ips(is_malicious)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ioc_ips_risk ON ioc_ips(risk_score)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ioc_urls_malicious ON ioc_urls(is_malicious)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ioc_urls_domain ON ioc_urls(domain)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ioc_hashes_malicious ON ioc_hashes(is_malicious)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ioc_hashes_type ON ioc_hashes(hash_type)')
+
         conn.commit()
         conn.close()
 
@@ -322,6 +411,623 @@ def search_cache(query: str, limit: int = 50) -> List[Dict]:
 
 # Initialize cache database on module load
 init_cache_db()
+
+
+# =============================================================================
+# IOC Storage Functions (for SIEM/Sentinel Export)
+# =============================================================================
+
+def store_ip_ioc(ip: str, investigation_result: Dict):
+    """Store IP investigation result in the IOC table"""
+    with _db_lock:
+        try:
+            conn = sqlite3.connect(CACHE_DB_FILE)
+            cursor = conn.cursor()
+
+            # Extract data from investigation result
+            summary = investigation_result.get('summary', {})
+            sources = investigation_result.get('sources', {})
+
+            # Determine if malicious
+            is_malicious = summary.get('isMalicious', False)
+            risk_score = summary.get('riskScore', 0)
+
+            # Extract from various sources
+            abuse_score = 0
+            total_reports = 0
+            is_tor = False
+            is_proxy = False
+            is_vpn = False
+            is_hosting = False
+            country = None
+            country_code = None
+            city = None
+            isp = None
+            org = None
+            asn = None
+            tags = []
+            malware_families = []
+            threat_types = []
+
+            # AbuseIPDB
+            if 'abuseipdb' in sources:
+                abuse_data = sources['abuseipdb']
+                abuse_score = abuse_data.get('abuseConfidenceScore', 0)
+                total_reports = abuse_data.get('totalReports', 0)
+                is_tor = abuse_data.get('isTor', False)
+                country_code = abuse_data.get('countryCode')
+
+            # IPQualityScore
+            if 'ipqualityscore' in sources:
+                ipqs = sources['ipqualityscore']
+                is_proxy = ipqs.get('proxy', False)
+                is_vpn = ipqs.get('vpn', False)
+                is_tor = is_tor or ipqs.get('tor', False)
+                is_hosting = ipqs.get('is_crawler', False) or ipqs.get('host', False)
+                country_code = country_code or ipqs.get('country_code')
+                city = ipqs.get('city')
+                isp = ipqs.get('ISP')
+                org = ipqs.get('organization')
+                asn = ipqs.get('ASN')
+
+            # GreyNoise
+            if 'greynoise' in sources:
+                gn = sources['greynoise']
+                if gn.get('classification'):
+                    tags.append(f"greynoise:{gn['classification']}")
+
+            # Shodan
+            if 'shodan' in sources:
+                shodan = sources['shodan']
+                if shodan.get('tags'):
+                    tags.extend(shodan['tags'])
+                country = shodan.get('country_name')
+                city = city or shodan.get('city')
+                isp = isp or shodan.get('isp')
+                org = org or shodan.get('org')
+                asn = asn or shodan.get('asn')
+
+            # ThreatFox
+            if 'threatfox' in sources:
+                tf = sources['threatfox']
+                if tf.get('malware'):
+                    malware_families.append(tf['malware'])
+                if tf.get('threat_type'):
+                    threat_types.append(tf['threat_type'])
+                if tf.get('tags'):
+                    tags.extend(tf['tags'])
+
+            # AlienVault OTX
+            if 'alienvault_otx' in sources:
+                otx = sources['alienvault_otx']
+                if otx.get('pulses'):
+                    for pulse in otx['pulses'][:5]:
+                        if pulse.get('tags'):
+                            tags.extend(pulse['tags'][:3])
+
+            cursor.execute('''
+                INSERT OR REPLACE INTO ioc_ips
+                (ip, is_malicious, risk_score, abuse_score, total_reports,
+                 is_tor, is_proxy, is_vpn, is_hosting, country, country_code,
+                 city, isp, org, asn, tags, malware_families, threat_types,
+                 last_updated, raw_data)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                ip,
+                is_malicious,
+                risk_score,
+                abuse_score,
+                total_reports,
+                is_tor,
+                is_proxy,
+                is_vpn,
+                is_hosting,
+                country,
+                country_code,
+                city,
+                isp,
+                org,
+                asn,
+                json.dumps(list(set(tags))) if tags else None,
+                json.dumps(list(set(malware_families))) if malware_families else None,
+                json.dumps(list(set(threat_types))) if threat_types else None,
+                datetime.now().isoformat(),
+                json.dumps(investigation_result)
+            ))
+
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[ThreatIntel] Error storing IP IOC: {e}")
+
+
+def store_url_ioc(url: str, investigation_result: Dict):
+    """Store URL investigation result in the IOC table"""
+    with _db_lock:
+        try:
+            conn = sqlite3.connect(CACHE_DB_FILE)
+            cursor = conn.cursor()
+
+            summary = investigation_result.get('summary', {})
+            sources = investigation_result.get('sources', {})
+
+            is_malicious = summary.get('isMalicious', False)
+            risk_score = summary.get('riskScore', 0)
+
+            # Extract domain from URL
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc
+            except:
+                domain = None
+
+            vt_malicious = 0
+            vt_suspicious = 0
+            vt_harmless = 0
+            urlhaus_status = None
+            threat_type = None
+            malware_family = None
+            tags = []
+            categories = []
+
+            # VirusTotal
+            if 'virustotal' in sources:
+                vt = sources['virustotal']
+                vt_malicious = vt.get('malicious', 0)
+                vt_suspicious = vt.get('suspicious', 0)
+                vt_harmless = vt.get('harmless', 0)
+                if vt.get('categories'):
+                    categories = list(vt['categories'].values())
+
+            # URLhaus
+            if 'urlhaus' in sources:
+                uh = sources['urlhaus']
+                urlhaus_status = uh.get('status')
+                threat_type = uh.get('threat')
+                if uh.get('tags'):
+                    tags.extend(uh['tags'])
+
+            # ThreatFox
+            if 'threatfox' in sources:
+                tf = sources['threatfox']
+                malware_family = tf.get('malware')
+                threat_type = threat_type or tf.get('threat_type')
+                if tf.get('tags'):
+                    tags.extend(tf['tags'])
+
+            cursor.execute('''
+                INSERT OR REPLACE INTO ioc_urls
+                (url, domain, is_malicious, risk_score, vt_malicious,
+                 vt_suspicious, vt_harmless, urlhaus_status, threat_type,
+                 malware_family, tags, categories, last_updated, raw_data)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                url,
+                domain,
+                is_malicious,
+                risk_score,
+                vt_malicious,
+                vt_suspicious,
+                vt_harmless,
+                urlhaus_status,
+                threat_type,
+                malware_family,
+                json.dumps(list(set(tags))) if tags else None,
+                json.dumps(categories) if categories else None,
+                datetime.now().isoformat(),
+                json.dumps(investigation_result)
+            ))
+
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[ThreatIntel] Error storing URL IOC: {e}")
+
+
+def store_hash_ioc(hash_value: str, investigation_result: Dict):
+    """Store hash investigation result in the IOC table"""
+    with _db_lock:
+        try:
+            conn = sqlite3.connect(CACHE_DB_FILE)
+            cursor = conn.cursor()
+
+            summary = investigation_result.get('summary', {})
+            sources = investigation_result.get('sources', {})
+
+            is_malicious = summary.get('isMalicious', False)
+            risk_score = summary.get('riskScore', 0)
+
+            # Determine hash type
+            hash_len = len(hash_value)
+            if hash_len == 32:
+                hash_type = 'md5'
+            elif hash_len == 40:
+                hash_type = 'sha1'
+            elif hash_len == 64:
+                hash_type = 'sha256'
+            else:
+                hash_type = 'unknown'
+
+            vt_malicious = 0
+            vt_suspicious = 0
+            vt_harmless = 0
+            file_name = None
+            file_type = None
+            file_size = None
+            malware_family = None
+            threat_type = None
+            tags = []
+            av_detections = []
+
+            # VirusTotal
+            if 'virustotal' in sources:
+                vt = sources['virustotal']
+                vt_malicious = vt.get('malicious', 0)
+                vt_suspicious = vt.get('suspicious', 0)
+                vt_harmless = vt.get('harmless', 0)
+                file_name = vt.get('meaningful_name') or vt.get('names', [None])[0] if vt.get('names') else None
+                file_type = vt.get('type_description')
+                file_size = vt.get('size')
+                if vt.get('tags'):
+                    tags.extend(vt['tags'])
+                if vt.get('popular_threat_classification'):
+                    ptc = vt['popular_threat_classification']
+                    if ptc.get('suggested_threat_label'):
+                        malware_family = ptc['suggested_threat_label']
+
+            # ThreatFox
+            if 'threatfox' in sources:
+                tf = sources['threatfox']
+                malware_family = malware_family or tf.get('malware')
+                threat_type = tf.get('threat_type')
+                if tf.get('tags'):
+                    tags.extend(tf['tags'])
+
+            # MalwareBazaar
+            if 'malwarebazaar' in sources:
+                mb = sources['malwarebazaar']
+                file_name = file_name or mb.get('file_name')
+                file_type = file_type or mb.get('file_type')
+                file_size = file_size or mb.get('file_size')
+                if mb.get('signature'):
+                    malware_family = malware_family or mb['signature']
+                if mb.get('tags'):
+                    tags.extend(mb['tags'])
+
+            cursor.execute('''
+                INSERT OR REPLACE INTO ioc_hashes
+                (hash_value, hash_type, is_malicious, risk_score, vt_malicious,
+                 vt_suspicious, vt_harmless, file_name, file_type, file_size,
+                 malware_family, threat_type, tags, av_detections, last_updated, raw_data)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                hash_value.lower(),
+                hash_type,
+                is_malicious,
+                risk_score,
+                vt_malicious,
+                vt_suspicious,
+                vt_harmless,
+                file_name,
+                file_type,
+                file_size,
+                malware_family,
+                threat_type,
+                json.dumps(list(set(tags))) if tags else None,
+                json.dumps(av_detections) if av_detections else None,
+                datetime.now().isoformat(),
+                json.dumps(investigation_result)
+            ))
+
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[ThreatIntel] Error storing hash IOC: {e}")
+
+
+# =============================================================================
+# IOC Export Functions (for SIEM/Sentinel)
+# =============================================================================
+
+def export_iocs(ioc_type: str = None, malicious_only: bool = False,
+                min_risk_score: int = 0, format: str = 'json',
+                limit: int = 1000) -> Dict:
+    """
+    Export IOCs for SIEM/Sentinel import
+
+    Args:
+        ioc_type: 'ip', 'url', 'hash', or None for all
+        malicious_only: Only export IOCs marked as malicious
+        min_risk_score: Minimum risk score to include
+        format: 'json', 'csv', or 'sentinel' (Azure Sentinel format)
+        limit: Maximum number of records to export
+
+    Returns:
+        Dict with export data and metadata
+    """
+    with _db_lock:
+        try:
+            conn = sqlite3.connect(CACHE_DB_FILE)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            results = {
+                'exportedAt': datetime.now().isoformat(),
+                'format': format,
+                'filters': {
+                    'iocType': ioc_type,
+                    'maliciousOnly': malicious_only,
+                    'minRiskScore': min_risk_score
+                },
+                'ips': [],
+                'urls': [],
+                'hashes': [],
+                'counts': {'ips': 0, 'urls': 0, 'hashes': 0, 'total': 0}
+            }
+
+            # Build WHERE clause
+            def build_where(malicious_col='is_malicious', risk_col='risk_score'):
+                conditions = []
+                params = []
+                if malicious_only:
+                    conditions.append(f'{malicious_col} = 1')
+                if min_risk_score > 0:
+                    conditions.append(f'{risk_col} >= ?')
+                    params.append(min_risk_score)
+                where = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
+                return where, params
+
+            # Export IPs
+            if ioc_type is None or ioc_type == 'ip':
+                where, params = build_where()
+                cursor.execute(f'''
+                    SELECT ip, is_malicious, risk_score, abuse_score, total_reports,
+                           is_tor, is_proxy, is_vpn, is_hosting, country, country_code,
+                           city, isp, org, asn, tags, malware_families, threat_types,
+                           first_seen, last_seen, last_updated
+                    FROM ioc_ips {where}
+                    ORDER BY risk_score DESC, last_updated DESC
+                    LIMIT ?
+                ''', params + [limit])
+
+                for row in cursor.fetchall():
+                    ip_data = dict(row)
+                    # Parse JSON fields
+                    for field in ['tags', 'malware_families', 'threat_types']:
+                        if ip_data.get(field):
+                            try:
+                                ip_data[field] = json.loads(ip_data[field])
+                            except:
+                                pass
+                    results['ips'].append(ip_data)
+                results['counts']['ips'] = len(results['ips'])
+
+            # Export URLs
+            if ioc_type is None or ioc_type == 'url':
+                where, params = build_where()
+                cursor.execute(f'''
+                    SELECT url, domain, is_malicious, risk_score, vt_malicious,
+                           vt_suspicious, vt_harmless, urlhaus_status, threat_type,
+                           malware_family, tags, categories, first_seen, last_seen,
+                           last_updated
+                    FROM ioc_urls {where}
+                    ORDER BY risk_score DESC, last_updated DESC
+                    LIMIT ?
+                ''', params + [limit])
+
+                for row in cursor.fetchall():
+                    url_data = dict(row)
+                    for field in ['tags', 'categories']:
+                        if url_data.get(field):
+                            try:
+                                url_data[field] = json.loads(url_data[field])
+                            except:
+                                pass
+                    results['urls'].append(url_data)
+                results['counts']['urls'] = len(results['urls'])
+
+            # Export Hashes
+            if ioc_type is None or ioc_type == 'hash':
+                where, params = build_where()
+                cursor.execute(f'''
+                    SELECT hash_value, hash_type, is_malicious, risk_score, vt_malicious,
+                           vt_suspicious, vt_harmless, file_name, file_type, file_size,
+                           malware_family, threat_type, tags, first_seen, last_seen,
+                           last_updated
+                    FROM ioc_hashes {where}
+                    ORDER BY risk_score DESC, last_updated DESC
+                    LIMIT ?
+                ''', params + [limit])
+
+                for row in cursor.fetchall():
+                    hash_data = dict(row)
+                    if hash_data.get('tags'):
+                        try:
+                            hash_data['tags'] = json.loads(hash_data['tags'])
+                        except:
+                            pass
+                    results['hashes'].append(hash_data)
+                results['counts']['hashes'] = len(results['hashes'])
+
+            results['counts']['total'] = (results['counts']['ips'] +
+                                          results['counts']['urls'] +
+                                          results['counts']['hashes'])
+
+            conn.close()
+
+            # Convert to requested format
+            if format == 'sentinel':
+                return convert_to_sentinel_format(results)
+            elif format == 'csv':
+                return convert_to_csv_format(results)
+            else:
+                return results
+
+        except Exception as e:
+            return {'error': str(e)}
+
+
+def convert_to_sentinel_format(data: Dict) -> Dict:
+    """Convert IOC export to Azure Sentinel TI format"""
+    indicators = []
+
+    # IPs
+    for ip in data.get('ips', []):
+        indicator = {
+            'type': 'indicator',
+            'spec_version': '2.1',
+            'pattern_type': 'stix',
+            'pattern': f"[ipv4-addr:value = '{ip['ip']}']",
+            'valid_from': ip.get('first_seen') or ip.get('last_updated'),
+            'created': ip.get('last_updated'),
+            'modified': ip.get('last_updated'),
+            'confidence': min(ip.get('risk_score', 0), 100),
+            'labels': [],
+            'external_references': []
+        }
+        if ip.get('is_malicious'):
+            indicator['labels'].append('malicious-activity')
+        if ip.get('is_tor'):
+            indicator['labels'].append('tor-exit-node')
+        if ip.get('malware_families'):
+            for mf in ip['malware_families']:
+                indicator['labels'].append(f'malware:{mf}')
+        indicators.append(indicator)
+
+    # URLs
+    for url in data.get('urls', []):
+        indicator = {
+            'type': 'indicator',
+            'spec_version': '2.1',
+            'pattern_type': 'stix',
+            'pattern': f"[url:value = '{url['url']}']",
+            'valid_from': url.get('first_seen') or url.get('last_updated'),
+            'created': url.get('last_updated'),
+            'modified': url.get('last_updated'),
+            'confidence': min(url.get('risk_score', 0), 100),
+            'labels': [],
+            'external_references': []
+        }
+        if url.get('is_malicious'):
+            indicator['labels'].append('malicious-activity')
+        if url.get('malware_family'):
+            indicator['labels'].append(f'malware:{url["malware_family"]}')
+        if url.get('threat_type'):
+            indicator['labels'].append(url['threat_type'])
+        indicators.append(indicator)
+
+    # Hashes
+    for h in data.get('hashes', []):
+        hash_type_map = {'md5': 'MD5', 'sha1': 'SHA-1', 'sha256': 'SHA-256'}
+        stix_hash_type = hash_type_map.get(h.get('hash_type'), 'SHA-256')
+        indicator = {
+            'type': 'indicator',
+            'spec_version': '2.1',
+            'pattern_type': 'stix',
+            'pattern': f"[file:hashes.'{stix_hash_type}' = '{h['hash_value']}']",
+            'valid_from': h.get('first_seen') or h.get('last_updated'),
+            'created': h.get('last_updated'),
+            'modified': h.get('last_updated'),
+            'confidence': min(h.get('risk_score', 0), 100),
+            'labels': [],
+            'external_references': []
+        }
+        if h.get('is_malicious'):
+            indicator['labels'].append('malicious-activity')
+        if h.get('malware_family'):
+            indicator['labels'].append(f'malware:{h["malware_family"]}')
+        if h.get('file_name'):
+            indicator['name'] = h['file_name']
+        indicators.append(indicator)
+
+    return {
+        'type': 'bundle',
+        'id': f'bundle--manny-threat-intel-{datetime.now().strftime("%Y%m%d%H%M%S")}',
+        'objects': indicators,
+        'exportedAt': data.get('exportedAt'),
+        'counts': data.get('counts')
+    }
+
+
+def convert_to_csv_format(data: Dict) -> Dict:
+    """Convert IOC export to CSV format"""
+    csv_data = {
+        'exportedAt': data.get('exportedAt'),
+        'counts': data.get('counts'),
+        'ips_csv': '',
+        'urls_csv': '',
+        'hashes_csv': ''
+    }
+
+    # IPs CSV
+    if data.get('ips'):
+        headers = ['ip', 'is_malicious', 'risk_score', 'abuse_score', 'is_tor', 'is_proxy', 'is_vpn', 'country_code', 'isp', 'last_updated']
+        lines = [','.join(headers)]
+        for ip in data['ips']:
+            row = [str(ip.get(h, '')) for h in headers]
+            lines.append(','.join(row))
+        csv_data['ips_csv'] = '\n'.join(lines)
+
+    # URLs CSV
+    if data.get('urls'):
+        headers = ['url', 'domain', 'is_malicious', 'risk_score', 'vt_malicious', 'threat_type', 'malware_family', 'last_updated']
+        lines = [','.join(headers)]
+        for url in data['urls']:
+            row = [str(url.get(h, '')).replace(',', ';') for h in headers]
+            lines.append(','.join(row))
+        csv_data['urls_csv'] = '\n'.join(lines)
+
+    # Hashes CSV
+    if data.get('hashes'):
+        headers = ['hash_value', 'hash_type', 'is_malicious', 'risk_score', 'vt_malicious', 'file_name', 'malware_family', 'last_updated']
+        lines = [','.join(headers)]
+        for h in data['hashes']:
+            row = [str(h.get(hdr, '')).replace(',', ';') for hdr in headers]
+            lines.append(','.join(row))
+        csv_data['hashes_csv'] = '\n'.join(lines)
+
+    return csv_data
+
+
+def get_ioc_stats() -> Dict:
+    """Get statistics about stored IOCs"""
+    with _db_lock:
+        try:
+            conn = sqlite3.connect(CACHE_DB_FILE)
+            cursor = conn.cursor()
+
+            stats = {
+                'ips': {'total': 0, 'malicious': 0},
+                'urls': {'total': 0, 'malicious': 0},
+                'hashes': {'total': 0, 'malicious': 0}
+            }
+
+            # IP stats
+            cursor.execute('SELECT COUNT(*) FROM ioc_ips')
+            stats['ips']['total'] = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(*) FROM ioc_ips WHERE is_malicious = 1')
+            stats['ips']['malicious'] = cursor.fetchone()[0]
+
+            # URL stats
+            cursor.execute('SELECT COUNT(*) FROM ioc_urls')
+            stats['urls']['total'] = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(*) FROM ioc_urls WHERE is_malicious = 1')
+            stats['urls']['malicious'] = cursor.fetchone()[0]
+
+            # Hash stats
+            cursor.execute('SELECT COUNT(*) FROM ioc_hashes')
+            stats['hashes']['total'] = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(*) FROM ioc_hashes WHERE is_malicious = 1')
+            stats['hashes']['malicious'] = cursor.fetchone()[0]
+
+            stats['totalIOCs'] = stats['ips']['total'] + stats['urls']['total'] + stats['hashes']['total']
+            stats['totalMalicious'] = stats['ips']['malicious'] + stats['urls']['malicious'] + stats['hashes']['malicious']
+
+            conn.close()
+            return stats
+
+        except Exception as e:
+            return {'error': str(e)}
 
 
 def load_config() -> Dict:
@@ -1122,6 +1828,9 @@ def investigate_ip(ip: str) -> Dict:
             fraud_score = results['sources']['ipqualityscore'].get('fraudScore', 0)
             results['summary']['riskScore'] = max(results['summary']['riskScore'], fraud_score)
 
+    # Store in IOC table for SIEM export
+    store_ip_ioc(ip, results)
+
     return results
 
 
@@ -1169,6 +1878,9 @@ def investigate_url(url: str) -> Dict:
         results['summary']['isMalicious'] = True
         results['summary']['riskScore'] = min(100, 40 + (results['summary']['maliciousSources'] * 25))
 
+    # Store in IOC table for SIEM export
+    store_url_ioc(url, results)
+
     return results
 
 
@@ -1215,6 +1927,9 @@ def investigate_hash(file_hash: str) -> Dict:
     if results['summary']['maliciousSources'] > 0:
         results['summary']['isMalicious'] = True
         results['summary']['riskScore'] = min(100, 50 + (results['summary']['maliciousSources'] * 20))
+
+    # Store in IOC table for SIEM export
+    store_hash_ioc(file_hash, results)
 
     return results
 

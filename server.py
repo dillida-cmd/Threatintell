@@ -2467,6 +2467,16 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             self.handle_cache_stats()
         elif self.path.startswith('/api/threat-intel/cache/search'):
             self.handle_cache_search()
+        elif self.path.startswith('/api/ioc/export/ips'):
+            self.handle_ioc_export_ips()
+        elif self.path.startswith('/api/ioc/export/urls'):
+            self.handle_ioc_export_urls()
+        elif self.path.startswith('/api/ioc/export/hashes'):
+            self.handle_ioc_export_hashes()
+        elif self.path.startswith('/api/ioc/export'):
+            self.handle_ioc_export()
+        elif self.path == '/api/ioc/stats':
+            self.handle_ioc_stats()
         else:
             # For SPA routing: serve index.html for non-file paths
             if not self.path.startswith('/api') and '.' not in self.path.split('/')[-1]:
@@ -2704,6 +2714,123 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             })
         else:
             self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+    def handle_ioc_export(self):
+        """Handle GET /api/ioc/export - export IOCs for SIEM/Sentinel"""
+        try:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+
+            ioc_type = params.get('type', [None])[0]  # ip, url, hash, or None for all
+            malicious_only = params.get('malicious', ['false'])[0].lower() == 'true'
+            min_risk = int(params.get('min_risk', [0])[0])
+            format_type = params.get('format', ['json'])[0]  # json, csv, sentinel
+            limit = int(params.get('limit', [1000])[0])
+
+            if THREAT_INTEL_AVAILABLE:
+                result = threat_intel.export_iocs(
+                    ioc_type=ioc_type,
+                    malicious_only=malicious_only,
+                    min_risk_score=min_risk,
+                    format=format_type,
+                    limit=limit
+                )
+                self.send_json(result)
+            else:
+                self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_ioc_stats(self):
+        """Handle GET /api/ioc/stats - get IOC statistics"""
+        if THREAT_INTEL_AVAILABLE:
+            stats = threat_intel.get_ioc_stats()
+            self.send_json(stats)
+        else:
+            self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+    def handle_ioc_export_ips(self):
+        """Handle GET /api/ioc/export/ips - export only IP IOCs"""
+        try:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+
+            malicious_only = params.get('malicious', ['false'])[0].lower() == 'true'
+            min_risk = int(params.get('min_risk', [0])[0])
+            format_type = params.get('format', ['json'])[0]
+            limit = int(params.get('limit', [1000])[0])
+
+            if THREAT_INTEL_AVAILABLE:
+                result = threat_intel.export_iocs(
+                    ioc_type='ip',
+                    malicious_only=malicious_only,
+                    min_risk_score=min_risk,
+                    format=format_type,
+                    limit=limit
+                )
+                self.send_json(result)
+            else:
+                self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_ioc_export_urls(self):
+        """Handle GET /api/ioc/export/urls - export only URL IOCs"""
+        try:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+
+            malicious_only = params.get('malicious', ['false'])[0].lower() == 'true'
+            min_risk = int(params.get('min_risk', [0])[0])
+            format_type = params.get('format', ['json'])[0]
+            limit = int(params.get('limit', [1000])[0])
+
+            if THREAT_INTEL_AVAILABLE:
+                result = threat_intel.export_iocs(
+                    ioc_type='url',
+                    malicious_only=malicious_only,
+                    min_risk_score=min_risk,
+                    format=format_type,
+                    limit=limit
+                )
+                self.send_json(result)
+            else:
+                self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_ioc_export_hashes(self):
+        """Handle GET /api/ioc/export/hashes - export only Hash IOCs"""
+        try:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+
+            malicious_only = params.get('malicious', ['false'])[0].lower() == 'true'
+            min_risk = int(params.get('min_risk', [0])[0])
+            format_type = params.get('format', ['json'])[0]
+            limit = int(params.get('limit', [1000])[0])
+
+            if THREAT_INTEL_AVAILABLE:
+                result = threat_intel.export_iocs(
+                    ioc_type='hash',
+                    malicious_only=malicious_only,
+                    min_risk_score=min_risk,
+                    format=format_type,
+                    limit=limit
+                )
+                self.send_json(result)
+            else:
+                self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
 
     def handle_results_get(self):
         """Handle POST /api/results/{entry_ref} for result retrieval"""

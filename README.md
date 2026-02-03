@@ -1,4 +1,4 @@
-# Threatintell
+# Manny Threat Intel
 
 A comprehensive threat intelligence platform for security analysts and researchers. Investigate IPs, URLs, and file hashes across multiple threat intelligence sources, and analyze suspicious files in a sandboxed environment.
 
@@ -17,6 +17,15 @@ A comprehensive threat intelligence platform for security analysts and researche
 - **Office Document Analysis** - Detect VBA macros, external references, remote templates, and malicious payloads in Word/Excel/PowerPoint files
 - **QR Code Detection** - Automatically detect and decode QR codes embedded in analyzed files
 
+### SIEM/Sentinel Integration
+
+Export investigated IOCs for import into your SIEM or Azure Sentinel:
+
+- **Separate IOC Tables** - IPs, URLs, and Hashes are stored in dedicated tables for easy querying
+- **Multiple Export Formats** - JSON, CSV, or STIX 2.1 (Azure Sentinel compatible)
+- **Filtered Exports** - Export only malicious IOCs or filter by risk score
+- **Bulk Export** - Export up to 1000 IOCs at once
+
 ### Threat Intelligence Sources
 
 The platform aggregates data from multiple sources:
@@ -34,7 +43,7 @@ The platform aggregates data from multiple sources:
 
 **Backend:**
 - Python 3 with Flask
-- SQLite for caching and result storage
+- SQLite for caching and IOC storage
 - oletools for Office macro analysis
 
 **Frontend:**
@@ -73,12 +82,30 @@ npm install
 4. Create `api_keys.json` in the root directory:
 ```json
 {
-  "abuseipdb": "your-api-key",
-  "virustotal": "your-api-key",
-  "ipqualityscore": "your-api-key",
-  "alienvault_otx": "your-api-key",
-  "greynoise": "your-api-key",
-  "shodan": "your-api-key"
+  "abuseipdb": {
+    "enabled": true,
+    "api_key": "your-api-key"
+  },
+  "virustotal": {
+    "enabled": true,
+    "api_key": "your-api-key"
+  },
+  "ipqualityscore": {
+    "enabled": true,
+    "api_key": "your-api-key"
+  },
+  "alienvault_otx": {
+    "enabled": true,
+    "api_key": "your-api-key"
+  },
+  "greynoise": {
+    "enabled": true,
+    "api_key": "your-api-key"
+  },
+  "shodan": {
+    "enabled": true,
+    "api_key": "your-api-key"
+  }
 }
 ```
 
@@ -117,6 +144,32 @@ The dev server proxies API requests to the Python backend on port 3000.
 | `/api/threat-intel/investigate/url` | POST | Investigate URL across threat sources |
 | `/api/threat-intel/investigate/hash` | POST | Investigate file hash |
 
+### IOC Export (SIEM/Sentinel)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/ioc/stats` | GET | Get IOC statistics (total, malicious counts) |
+| `/api/ioc/export` | GET | Export all IOCs |
+| `/api/ioc/export/ips` | GET | Export only IP IOCs |
+| `/api/ioc/export/urls` | GET | Export only URL IOCs |
+| `/api/ioc/export/hashes` | GET | Export only hash IOCs |
+
+**Export Query Parameters:**
+- `format` - Output format: `json` (default), `csv`, or `sentinel` (STIX 2.1)
+- `malicious` - Set to `true` to export only malicious IOCs
+- `min_risk` - Minimum risk score (0-100)
+- `limit` - Maximum records to export (default: 1000)
+
+**Example: Export malicious IPs in Sentinel format**
+```bash
+curl "http://localhost:3000/api/ioc/export/ips?format=sentinel&malicious=true"
+```
+
+**Example: Export all IOCs with risk score >= 50 as CSV**
+```bash
+curl "http://localhost:3000/api/ioc/export?format=csv&min_risk=50"
+```
+
 ### File Analysis
 
 | Endpoint | Method | Description |
@@ -126,14 +179,66 @@ The dev server proxies API requests to the Python backend on port 3000.
 | `/api/analyze/office` | POST | Analyze Office document |
 | `/api/results/<ref>` | POST | Retrieve analysis results |
 
-## Screenshots
+## Database Schema
 
-The application features a dark-themed interface with:
-- Real-time threat intelligence lookups
-- Risk score visualization with color-coded indicators
-- Detailed breakdown of findings from each source
-- File upload with drag-and-drop support
-- Comprehensive analysis reports
+### IOC Tables
+
+**ioc_ips** - Stores investigated IP addresses
+```sql
+- ip (unique)
+- is_malicious, risk_score, abuse_score
+- is_tor, is_proxy, is_vpn, is_hosting
+- country, country_code, city, isp, org, asn
+- tags, malware_families, threat_types
+- first_seen, last_seen, last_updated
+```
+
+**ioc_urls** - Stores investigated URLs
+```sql
+- url (unique), domain
+- is_malicious, risk_score
+- vt_malicious, vt_suspicious, vt_harmless
+- urlhaus_status, threat_type, malware_family
+- tags, categories
+- first_seen, last_seen, last_updated
+```
+
+**ioc_hashes** - Stores investigated file hashes
+```sql
+- hash_value (unique), hash_type
+- is_malicious, risk_score
+- vt_malicious, vt_suspicious, vt_harmless
+- file_name, file_type, file_size
+- malware_family, threat_type, tags
+- first_seen, last_seen, last_updated
+```
+
+## Sentinel/SIEM Integration
+
+### Azure Sentinel
+
+1. Export IOCs in STIX format:
+```bash
+curl "http://localhost:3000/api/ioc/export?format=sentinel&malicious=true" > iocs.json
+```
+
+2. Import using Microsoft Graph Security API or Azure Sentinel Threat Intelligence connector
+
+### Splunk
+
+1. Export IOCs in CSV format:
+```bash
+curl "http://localhost:3000/api/ioc/export/ips?format=csv" > ip_iocs.csv
+```
+
+2. Upload to Splunk as a lookup table or use the Threat Intelligence Framework
+
+### Generic SIEM
+
+Use the JSON export format for maximum flexibility:
+```bash
+curl "http://localhost:3000/api/ioc/export?format=json"
+```
 
 ## Security Notes
 
