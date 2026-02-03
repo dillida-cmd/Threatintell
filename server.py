@@ -3227,7 +3227,24 @@ def main():
     print(f"Database initialized at {DATABASE_FILE}")
 
     server = ReuseAddrHTTPServer(('0.0.0.0', PORT), IPLookupHandler)
-    print(f"IP Lookup server running at http://localhost:{PORT}")
+
+    # Get local IP addresses
+    import socket
+    hostname = socket.gethostname()
+    try:
+        local_ip = socket.gethostbyname(hostname)
+    except:
+        local_ip = '127.0.0.1'
+
+    print(f"\n{'='*50}")
+    print(f"  Manny Threat Intel Server Started")
+    print(f"{'='*50}")
+    print(f"  Local:   http://localhost:{PORT}")
+    print(f"  Network: http://{local_ip}:{PORT}")
+    print(f"{'='*50}")
+    print(f"  Press Ctrl+C to stop the server")
+    print(f"{'='*50}\n")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
