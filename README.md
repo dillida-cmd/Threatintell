@@ -28,8 +28,6 @@ Export investigated IOCs for import into your SIEM or Azure Sentinel:
 
 ### Threat Intelligence Sources
 
-The platform aggregates data from multiple sources:
-
 | Source | Data Provided |
 |--------|---------------|
 | AbuseIPDB | IP abuse reports and confidence scores |
@@ -54,105 +52,159 @@ The platform aggregates data from multiple sources:
 - Tailwind CSS (dark theme)
 - Lucide React icons
 
-## Quick Installation
+## Installation
 
-### One-Line Install
+### Quick Start
 
-```bash
-git clone https://github.com/dillida-cmd/Threatintell.git && cd Threatintell && chmod +x install.sh && ./install.sh
-```
-
-### What the Installer Does
-
-1. Checks for Python 3.8+ and Node.js 18+
-2. Installs Python dependencies
-3. Installs frontend dependencies
-4. Builds the React frontend
-5. Creates `api_keys.json` template
-6. Creates start/stop scripts
-7. **Optionally installs as a system service (auto-start on boot)**
-
-## Manual Installation
-
-### Prerequisites
-
-- Python 3.8+
-- Node.js 18+
-- API keys for threat intelligence services
-
-### Step-by-Step
-
-1. Clone the repository:
 ```bash
 git clone https://github.com/dillida-cmd/Threatintell.git
 cd Threatintell
+chmod +x install.sh
+./install.sh
 ```
 
-2. Install Python dependencies:
+The interactive installer will guide you through all configuration options.
+
+### Interactive Installer Options
+
+The installer prompts for the following configurations:
+
+#### Step 1: System Requirements
+Automatically checks for:
+- Python 3.8+
+- Node.js 18+
+- npm
+
+#### Step 2: Server Configuration
+
+```
+Select connection mode:
+  1) Local only (127.0.0.1) - Access from this machine only
+  2) Network (0.0.0.0) - Access from any device on the network
+
+Enter server port (default: 3000):
+```
+
+#### Step 3: Database Configuration
+
+```
+Analysis results database name (default: analysis_results.db):
+IOC cache database name (default: ioc_cache.db):
+IOC cache duration in hours (default: 24):
+```
+
+#### Step 4: Database Encryption
+
+```
+⚠ IMPORTANT: The encryption key is used to encrypt sensitive data.
+  If you lose this key, encrypted data cannot be recovered!
+
+Enable database encryption? [Y/n]:
+Enter encryption secret (min 16 characters):
+  (Leave blank to auto-generate a secure key)
+```
+
+#### Step 5: API Keys Configuration
+
+The installer prompts for each threat intelligence service API key and shows where to obtain them:
+
+```
+AbuseIPDB
+  Get API key: https://www.abuseipdb.com/account/api
+  API Key (Enter to skip):
+
+VirusTotal
+  Get API key: https://www.virustotal.com/gui/my-apikey
+  API Key (Enter to skip):
+
+IPQualityScore
+  Get API key: https://www.ipqualityscore.com/create-account
+  API Key (Enter to skip):
+
+AlienVault OTX
+  Get API key: https://otx.alienvault.com/api
+  API Key (Enter to skip):
+
+GreyNoise
+  Get API key: https://viz.greynoise.io/account/api-key
+  API Key (Enter to skip):
+
+Shodan
+  Get API key: https://account.shodan.io/
+  API Key (Enter to skip):
+```
+
+#### Step 6: API Mode Configuration
+
+```
+Select API mode:
+  1) Full Mode - All features enabled (UI + API)
+  2) API Only - REST API only (no web interface)
+  3) UI Only - Web interface with basic lookups (no threat intel APIs)
+
+Enable API rate limiting? [Y/n]:
+Requests per minute (default: 60):
+```
+
+#### Step 7-9: Automatic Steps
+- Generates configuration files (`api_keys.json`, `.env`, `config.py`)
+- Installs Python and Node.js dependencies
+- Builds the React frontend
+- Creates helper scripts
+
+#### Step 10: System Service
+
+```
+Install as a system service for auto-start on boot?
+This requires sudo/root access.
+Install service? [y/N]:
+```
+
+### Configuration Files Generated
+
+| File | Purpose | Security |
+|------|---------|----------|
+| `api_keys.json` | API keys for threat intel services | chmod 600 |
+| `.env` | Environment configuration | chmod 600 |
+| `config.py` | Python configuration module | chmod 600 |
+| `.encryption_key` | Database encryption key | chmod 600 |
+
+**⚠ Important:** These files contain sensitive data and are excluded from git. Keep them secure and backed up!
+
+### Installation Summary
+
+After installation completes, you'll see:
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║            INSTALLATION COMPLETE!                            ║
+╚══════════════════════════════════════════════════════════════╝
+
+Configuration Summary:
+  Server:      0.0.0.0:3000
+  API Mode:    full
+  Database:    analysis_results.db
+  IOC Cache:   ioc_cache.db
+  Encryption:  true
+
+API Keys Configured:
+  ✓ AbuseIPDB
+  ✓ VirusTotal
+  - IPQualityScore (not configured)
+  ✓ AlienVault OTX
+  - GreyNoise (not configured)
+  - Shodan (not configured)
+```
+
+## Running the Server
+
+### Manual Start
+
 ```bash
-pip install -r requirements.txt
+./start.sh
 ```
 
-3. Install frontend dependencies and build:
-```bash
-cd frontend
-npm install
-npm run build
-cd ..
-```
-
-4. Create `api_keys.json` in the root directory:
-```json
-{
-  "abuseipdb": {
-    "enabled": true,
-    "api_key": "your-api-key"
-  },
-  "virustotal": {
-    "enabled": true,
-    "api_key": "your-api-key"
-  },
-  "ipqualityscore": {
-    "enabled": true,
-    "api_key": "your-api-key"
-  },
-  "alienvault_otx": {
-    "enabled": true,
-    "api_key": "your-api-key"
-  },
-  "greynoise": {
-    "enabled": true,
-    "api_key": "your-api-key"
-  },
-  "shodan": {
-    "enabled": true,
-    "api_key": "your-api-key"
-  }
-}
-```
-
-5. Start the server:
-```bash
-python server.py
-```
-
-## Running as a Service (Auto-Start on Boot)
-
-### During Installation
-
-When running `./install.sh`, answer **y** when prompted:
-```
-Would you like to install as a system service? (auto-start on boot)
-Install service? [y/N]: y
-```
-
-### Manual Service Installation
-
-```bash
-sudo ./install-service.sh
-```
-
-### Service Commands
+### Service Commands (if installed as service)
 
 ```bash
 sudo systemctl start manny-threatintel    # Start server
@@ -162,21 +214,26 @@ sudo systemctl status manny-threatintel   # Check status
 sudo journalctl -u manny-threatintel -f   # View logs
 ```
 
-### Uninstall Service
+### Helper Scripts
 
-```bash
-sudo ./uninstall-service.sh
-```
+| Script | Purpose |
+|--------|---------|
+| `./start.sh` | Start the server |
+| `./stop.sh` | Stop the server |
+| `./status.sh` | Check if server is running |
+| `./reconfigure.sh` | Re-run the installer to change settings |
 
 ## Network Access
 
-The server listens on all network interfaces (`0.0.0.0:3000`), allowing access from other devices on your network.
+The server can be configured to listen on:
+- **Local only** (`127.0.0.1`) - Access from this machine only
+- **Network** (`0.0.0.0`) - Access from any device on the network
 
 **Access URLs:**
 - Local: `http://localhost:3000`
 - Network: `http://<your-ip>:3000`
 
-To find your IP address:
+Find your IP address:
 ```bash
 hostname -I | awk '{print $1}'
 ```
@@ -197,28 +254,28 @@ hostname -I | awk '{print $1}'
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/ioc/stats` | GET | Get IOC statistics (total, malicious counts) |
+| `/api/ioc/stats` | GET | Get IOC statistics |
 | `/api/ioc/export` | GET | Export all IOCs |
-| `/api/ioc/export/ips` | GET | Export only IP IOCs |
-| `/api/ioc/export/urls` | GET | Export only URL IOCs |
-| `/api/ioc/export/hashes` | GET | Export only hash IOCs |
+| `/api/ioc/export/ips` | GET | Export IP IOCs only |
+| `/api/ioc/export/urls` | GET | Export URL IOCs only |
+| `/api/ioc/export/hashes` | GET | Export hash IOCs only |
 
 **Export Query Parameters:**
-- `format` - Output format: `json` (default), `csv`, or `sentinel` (STIX 2.1)
-- `malicious` - Set to `true` to export only malicious IOCs
+- `format` - `json` (default), `csv`, or `sentinel` (STIX 2.1)
+- `malicious` - `true` to export only malicious IOCs
 - `min_risk` - Minimum risk score (0-100)
-- `limit` - Maximum records to export (default: 1000)
+- `limit` - Maximum records (default: 1000)
 
 **Examples:**
 
 ```bash
-# Export malicious IPs in Sentinel format
+# Export malicious IPs for Azure Sentinel
 curl "http://localhost:3000/api/ioc/export/ips?format=sentinel&malicious=true"
 
-# Export all IOCs with risk score >= 50 as CSV
+# Export all high-risk IOCs as CSV
 curl "http://localhost:3000/api/ioc/export?format=csv&min_risk=50"
 
-# Export all hashes as JSON
+# Export all hashes
 curl "http://localhost:3000/api/ioc/export/hashes"
 ```
 
@@ -235,109 +292,125 @@ curl "http://localhost:3000/api/ioc/export/hashes"
 
 ### IOC Tables
 
-**ioc_ips** - Stores investigated IP addresses
-- `ip` (unique), `is_malicious`, `risk_score`, `abuse_score`
+**ioc_ips** - Investigated IP addresses
+- `ip`, `is_malicious`, `risk_score`, `abuse_score`
 - `is_tor`, `is_proxy`, `is_vpn`, `is_hosting`
 - `country`, `country_code`, `city`, `isp`, `org`, `asn`
 - `tags`, `malware_families`, `threat_types`
-- `first_seen`, `last_seen`, `last_updated`
 
-**ioc_urls** - Stores investigated URLs
-- `url` (unique), `domain`, `is_malicious`, `risk_score`
+**ioc_urls** - Investigated URLs
+- `url`, `domain`, `is_malicious`, `risk_score`
 - `vt_malicious`, `vt_suspicious`, `vt_harmless`
 - `urlhaus_status`, `threat_type`, `malware_family`
-- `tags`, `categories`
-- `first_seen`, `last_seen`, `last_updated`
 
-**ioc_hashes** - Stores investigated file hashes
-- `hash_value` (unique), `hash_type`, `is_malicious`, `risk_score`
+**ioc_hashes** - Investigated file hashes
+- `hash_value`, `hash_type`, `is_malicious`, `risk_score`
 - `vt_malicious`, `vt_suspicious`, `vt_harmless`
-- `file_name`, `file_type`, `file_size`
-- `malware_family`, `threat_type`, `tags`
-- `first_seen`, `last_seen`, `last_updated`
+- `file_name`, `file_type`, `malware_family`
 
-## SIEM Integration Examples
+## SIEM Integration
 
 ### Azure Sentinel
 
 ```bash
-# Export IOCs in STIX 2.1 format
 curl "http://localhost:3000/api/ioc/export?format=sentinel&malicious=true" > iocs.json
 ```
 
-Import using Microsoft Graph Security API or Azure Sentinel Threat Intelligence connector.
+Import via Microsoft Graph Security API or Threat Intelligence connector.
 
 ### Splunk
 
 ```bash
-# Export IOCs in CSV format
 curl "http://localhost:3000/api/ioc/export/ips?format=csv" > ip_iocs.csv
 ```
 
-Upload to Splunk as a lookup table or use the Threat Intelligence Framework.
-
-### Generic SIEM
-
-```bash
-# Export all IOCs as JSON
-curl "http://localhost:3000/api/ioc/export?format=json"
-```
+Upload as lookup table or use Threat Intelligence Framework.
 
 ## Project Structure
 
 ```
 Threatintell/
-├── server.py              # Main Python backend
-├── threat_intel.py        # Threat intelligence module
-├── requirements.txt       # Python dependencies
-├── api_keys.json          # API keys (not in repo)
-├── install.sh             # Main installer
-├── install-service.sh     # Service installer
-├── uninstall-service.sh   # Service uninstaller
-├── manny-threatintel.service  # Systemd unit file
-├── start.sh               # Quick start script
-├── stop.sh                # Quick stop script
-├── README.md              # This file
-└── frontend/              # React frontend
+├── server.py                 # Main Python backend
+├── threat_intel.py           # Threat intelligence module
+├── requirements.txt          # Python dependencies
+├── install.sh                # Interactive installer
+├── install-service.sh        # Standalone service installer
+├── uninstall-service.sh      # Service uninstaller
+├── start.sh                  # Start server
+├── stop.sh                   # Stop server
+├── status.sh                 # Check status
+├── reconfigure.sh            # Re-run configuration
+├── manny-threatintel.service # Systemd unit template
+├── README.md                 # This file
+│
+├── api_keys.json             # API keys (generated, not in git)
+├── .env                      # Environment config (generated, not in git)
+├── config.py                 # Python config (generated, not in git)
+├── .encryption_key           # Encryption key (generated, not in git)
+│
+└── frontend/                 # React frontend
     ├── src/
-    │   ├── components/    # React components
-    │   ├── hooks/         # Custom hooks
-    │   ├── api/           # API client
-    │   └── types/         # TypeScript types
-    ├── dist/              # Production build
-    └── package.json       # Node dependencies
+    │   ├── components/       # React components
+    │   ├── hooks/            # Custom hooks
+    │   ├── api/              # API client
+    │   └── types/            # TypeScript types
+    ├── dist/                 # Production build
+    └── package.json          # Node dependencies
 ```
 
 ## Security Notes
 
-- API keys are stored locally in `api_keys.json` (excluded from git)
-- File analysis is performed locally without uploading to external services
-- Analysis results are cached with configurable expiration
-- Sensitive data is encrypted at rest
-- Database files (`*.db`) are excluded from git
+- **Encryption Key**: If database encryption is enabled, the `.encryption_key` file is critical. If lost, encrypted data cannot be recovered. Back it up securely!
+- **API Keys**: Stored in `api_keys.json` with restricted permissions (chmod 600)
+- **Config Files**: `.env` and `config.py` contain sensitive settings
+- **Git Exclusions**: All sensitive files are in `.gitignore`
+- **File Analysis**: Performed locally, files are not uploaded to external services
 
 ## Troubleshooting
 
 ### Port already in use
+
 ```bash
-# Find and kill process using port 3000
 lsof -i :3000
 kill -9 <PID>
 ```
 
 ### Service not starting
-```bash
-# Check service logs
-sudo journalctl -u manny-threatintel -n 50
 
-# Check service status
+```bash
+sudo journalctl -u manny-threatintel -n 50
 sudo systemctl status manny-threatintel
 ```
 
-### API keys not working
-- Ensure `api_keys.json` exists in the root directory
-- Set `"enabled": true` for each service you want to use
-- Verify API keys are valid and have sufficient quota
+### Reconfigure settings
+
+```bash
+./reconfigure.sh
+```
+
+### Reset installation
+
+```bash
+./stop.sh
+rm -f api_keys.json .env config.py .encryption_key
+./install.sh
+```
+
+## Uninstall
+
+### Remove service
+
+```bash
+sudo ./uninstall-service.sh
+```
+
+### Remove all data
+
+```bash
+./stop.sh
+sudo ./uninstall-service.sh
+rm -rf analysis_results.db ioc_cache.db api_keys.json .env config.py .encryption_key
+```
 
 ## License
 
@@ -345,4 +418,4 @@ MIT License
 
 ## Author
 
-Built with security analysts in mind.
+Built for security analysts and threat intelligence teams.
