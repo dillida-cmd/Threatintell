@@ -19,6 +19,14 @@ from email.parser import BytesParser
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
+# Import threat intelligence module
+try:
+    import threat_intel
+    THREAT_INTEL_AVAILABLE = True
+except ImportError:
+    THREAT_INTEL_AVAILABLE = False
+    print("[Warning] threat_intel module not available")
+
 PORT = 3000
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 DATABASE_FILE = os.path.join(os.path.dirname(__file__), 'analysis_results.db')
@@ -28,8 +36,16 @@ EXPIRATION_DAYS = 30
 MIN_SECRET_KEY_LENGTH = 8
 PBKDF2_ITERATIONS = 100000
 
-# Get free API key from https://www.abuseipdb.com/account/api
-ABUSEIPDB_API_KEY = os.environ.get('ABUSEIPDB_API_KEY', '')
+# Load API key from config file or environment
+def get_abuseipdb_key():
+    """Get AbuseIPDB API key from config file or environment"""
+    if THREAT_INTEL_AVAILABLE:
+        key = threat_intel.get_api_key('abuseipdb')
+        if key:
+            return key
+    return os.environ.get('ABUSEIPDB_API_KEY', '')
+
+ABUSEIPDB_API_KEY = get_abuseipdb_key()
 
 # Abuse categories from AbuseIPDB
 ABUSE_CATEGORIES = {
@@ -696,7 +712,16 @@ def ip_lookup(ip):
 
 def check_abuse_ipdb(ip):
     """Check IP against AbuseIPDB for threat intelligence"""
-    if not ABUSEIPDB_API_KEY:
+    # Try using threat_intel module first
+    if THREAT_INTEL_AVAILABLE:
+        result = threat_intel.check_abuseipdb(ip)
+        if 'error' not in result:
+            return result
+        # Fall through to original method if error
+
+    # Original implementation as fallback
+    api_key = get_abuseipdb_key()
+    if not api_key:
         return None
 
     cache_key = f'abuse:{ip}'
@@ -707,7 +732,7 @@ def check_abuse_ipdb(ip):
     try:
         url = f'https://api.abuseipdb.com/api/v2/check?ipAddress={ip}&maxAgeInDays=90&verbose=true'
         req = urllib.request.Request(url, headers={
-            'Key': ABUSEIPDB_API_KEY,
+            'Key': api_key,
             'Accept': 'application/json'
         })
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -718,6 +743,57 @@ def check_abuse_ipdb(ip):
     except Exception as e:
         print(f"AbuseIPDB error: {e}")
         return None
+
+
+def investigate_iocs(ips=None, urls=None, hashes=None, max_per_type=5):
+    """
+    Investigate IOCs using threat intelligence APIs.
+    Returns investigation results for all IOC types.
+    """
+    if not THREAT_INTEL_AVAILABLE:
+        return {
+            'error': 'Threat intelligence module not available',
+            'ips': [],
+            'urls': [],
+            'hashes': []
+        }
+
+    try:
+        return threat_intel.investigate_all_iocs(
+            ips=ips or [],
+            urls=urls or [],
+            hashes=hashes or [],
+            max_per_type=max_per_type
+        )
+    except Exception as e:
+        print(f"IOC investigation error: {e}")
+        return {
+            'error': str(e),
+            'ips': [],
+            'urls': [],
+            'hashes': []
+        }
+
+
+def get_threat_intel_status():
+    """Get status of configured threat intelligence services"""
+    if not THREAT_INTEL_AVAILABLE:
+        return {
+            'available': False,
+            'services': {}
+        }
+
+    try:
+        return {
+            'available': True,
+            'services': threat_intel.get_configured_services()
+        }
+    except Exception as e:
+        return {
+            'available': False,
+            'error': str(e),
+            'services': {}
+        }
 
 
 def enrich_url(url):
@@ -1252,6 +1328,33 @@ def analyze_email(file_data):
         # Calculate risk score (include QR codes)
         risk_score = calculate_email_risk_score(phishing_indicators, auth_results, attachments, sender_domain_info, qr_codes)
 
+        # Automatic IOC investigation using threat intel APIs
+        ioc_investigation = None
+        if THREAT_INTEL_AVAILABLE:
+            # Collect unique IPs from routing
+            investigation_ips = list(set([r['ip'] for r in routing_ips if r.get('ip')]))[:5]
+            # Collect unique URLs
+            investigation_urls = list(set(urls + qr_urls))[:10]
+            # Collect attachment hashes
+            investigation_hashes = [a.get('sha256') or a.get('md5') for a in attachments if a.get('sha256') or a.get('md5')][:5]
+
+            if investigation_ips or investigation_urls or investigation_hashes:
+                ioc_investigation = investigate_iocs(
+                    ips=investigation_ips,
+                    urls=investigation_urls,
+                    hashes=investigation_hashes,
+                    max_per_type=5
+                )
+                # Update risk score based on IOC findings
+                if ioc_investigation.get('summary', {}).get('maliciousIOCs', 0) > 0:
+                    ioc_risk = ioc_investigation['summary'].get('overallRiskScore', 0)
+                    risk_score = max(risk_score, ioc_risk)
+                    phishing_indicators.append({
+                        'type': 'threat_intel',
+                        'severity': 'high' if ioc_risk > 70 else 'medium',
+                        'description': f"Threat intelligence: {ioc_investigation['summary']['maliciousIOCs']} malicious IOCs detected"
+                    })
+
         return {
             'success': True,
             'type': 'email',
@@ -1270,7 +1373,8 @@ def analyze_email(file_data):
             'qrCodeCount': len(qr_codes),
             'phishingIndicators': phishing_indicators,
             'riskScore': risk_score,
-            'riskLevel': get_risk_level(risk_score)
+            'riskLevel': get_risk_level(risk_score),
+            'iocInvestigation': ioc_investigation
         }
     except Exception as e:
         return {'success': False, 'error': f'Failed to parse email: {str(e)}'}
@@ -1715,6 +1819,28 @@ def analyze_pdf(file_data):
         # Calculate risk score (include QR codes)
         risk_score = calculate_pdf_risk_score(javascript_found, embedded_files, external_refs, forms, download_urls, process_triggers, qr_codes)
 
+        # Automatic IOC investigation using threat intel APIs
+        ioc_investigation = None
+        suspicious_indicators = []
+        if THREAT_INTEL_AVAILABLE:
+            # Collect unique URLs for investigation
+            investigation_urls = list(set(urls))[:10]
+
+            if investigation_urls:
+                ioc_investigation = investigate_iocs(
+                    urls=investigation_urls,
+                    max_per_type=5
+                )
+                # Update risk score based on IOC findings
+                if ioc_investigation.get('summary', {}).get('maliciousIOCs', 0) > 0:
+                    ioc_risk = ioc_investigation['summary'].get('overallRiskScore', 0)
+                    risk_score = max(risk_score, ioc_risk)
+                    suspicious_indicators.append({
+                        'type': 'threat_intel',
+                        'severity': 'high' if ioc_risk > 70 else 'medium',
+                        'description': f"Threat intelligence: {ioc_investigation['summary']['maliciousIOCs']} malicious URLs detected"
+                    })
+
         return {
             'success': True,
             'type': 'pdf',
@@ -1737,7 +1863,9 @@ def analyze_pdf(file_data):
             'qrCodes': qr_codes,
             'qrCodeCount': len(qr_codes),
             'riskScore': risk_score,
-            'riskLevel': get_risk_level(risk_score)
+            'riskLevel': get_risk_level(risk_score),
+            'suspiciousIndicators': suspicious_indicators,
+            'iocInvestigation': ioc_investigation
         }
     except ImportError:
         return {'success': False, 'error': 'pypdf library not installed. Run: pip install pypdf'}
@@ -1791,177 +1919,405 @@ def calculate_pdf_risk_score(javascript, embedded_files, external_refs, forms, d
 
 def analyze_office(file_data, filename):
     """Analyze an Office document for macros and suspicious content"""
+    import zipfile
+    import io
+    import xml.etree.ElementTree as ET
+
+    results = {
+        'success': True,
+        'type': 'office',
+        'filename': filename,
+        'documentType': None,
+        'title': None,
+        'author': None,
+        'lastModifiedBy': None,
+        'created': None,
+        'modified': None,
+        'macros': [],
+        'hasMacros': False,
+        'autoExecution': [],
+        'suspiciousPatterns': [],
+        'embeddedObjects': [],
+        'externalReferences': [],
+        'externalLinks': [],
+        'urls': [],
+        'enrichedUrls': [],
+        'httpRequests': [],
+        'downloadTargets': [],
+        'processTriggers': [],
+        'riskScore': 0,
+        'riskLevel': 'Low'
+    }
+
+    # URL and dangerous patterns
+    url_pattern = re.compile(r'https?://[^\s<>"\'}\]]+', re.IGNORECASE)
+    http_patterns = [
+        (r'WinHttp', 'WinHTTP request'),
+        (r'XMLHTTP', 'XMLHTTP request'),
+        (r'ServerXMLHTTP', 'ServerXMLHTTP request'),
+        (r'URLDownloadToFile', 'URLDownloadToFile'),
+        (r'Inet\.OpenURL', 'Internet Transfer Control'),
+        (r'WebClient', 'WebClient request'),
+    ]
+    process_patterns = [
+        (r'Shell\s*[\(\"]', 'Shell() execution'),
+        (r'WScript\.Shell', 'WScript.Shell'),
+        (r'CreateObject\s*\(\s*["\']?(WScript\.Shell|Shell)', 'Shell.Application'),
+        (r'cmd\.exe', 'cmd.exe'),
+        (r'powershell', 'PowerShell'),
+        (r'cscript', 'cscript.exe'),
+        (r'wscript', 'wscript.exe'),
+        (r'mshta', 'mshta.exe'),
+        (r'regsvr32', 'regsvr32.exe'),
+        (r'rundll32', 'rundll32.exe'),
+        (r'certutil', 'certutil.exe'),
+        (r'bitsadmin', 'bitsadmin.exe'),
+    ]
+    download_patterns = [
+        (r'SaveAs|SaveToFile|\.Write', 'File save operation'),
+        (r'ADODB\.Stream', 'ADODB Stream'),
+        (r'Scripting\.FileSystemObject', 'FileSystemObject'),
+    ]
+    auto_triggers = ['autoopen', 'autoclose', 'autonew', 'autoexec',
+                    'document_open', 'document_close', 'workbook_open',
+                    'workbook_close', 'auto_open', 'auto_close']
+
+    # Determine document type from filename
+    ext = filename.lower().split('.')[-1] if '.' in filename else ''
+    if ext in ['docx', 'docm', 'dotx', 'dotm']:
+        results['documentType'] = 'Word Document'
+    elif ext in ['xlsx', 'xlsm', 'xltx', 'xltm', 'xlsb']:
+        results['documentType'] = 'Excel Spreadsheet'
+    elif ext in ['pptx', 'pptm', 'potx', 'potm']:
+        results['documentType'] = 'PowerPoint Presentation'
+    elif ext in ['doc', 'xls', 'ppt']:
+        results['documentType'] = 'Legacy Office Document'
+
+    # Check if it's a macro-enabled format
+    is_macro_format = ext in ['docm', 'xlsm', 'pptm', 'dotm', 'xltm', 'potm', 'xlsb']
+
+    all_text_content = ""
+
+    # Try to parse as OOXML (ZIP-based format)
     try:
-        from oletools import olevba
-        from oletools.olevba import VBA_Parser
+        with zipfile.ZipFile(io.BytesIO(file_data), 'r') as zf:
+            file_list = zf.namelist()
 
-        results = {
-            'success': True,
-            'type': 'office',
-            'filename': filename,
-            'macros': [],
-            'hasMacros': False,
-            'autoExecution': [],
-            'suspiciousPatterns': [],
-            'embeddedObjects': [],
-            'externalReferences': [],
-            'urls': [],
-            'enrichedUrls': [],
-            'httpRequests': [],
-            'downloadTargets': [],
-            'processTriggers': [],
-            'riskScore': 0,
-            'riskLevel': 'Low'
-        }
-
-        # URL and dangerous patterns
-        url_pattern = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
-        http_patterns = [
-            (r'WinHttp', 'WinHTTP request'),
-            (r'XMLHTTP', 'XMLHTTP request'),
-            (r'ServerXMLHTTP', 'ServerXMLHTTP request'),
-            (r'URLDownloadToFile', 'URLDownloadToFile'),
-            (r'Inet\.OpenURL', 'Internet Transfer Control'),
-            (r'WebClient', 'WebClient request'),
-        ]
-        process_patterns = [
-            (r'Shell\s*\(', 'Shell() execution'),
-            (r'WScript\.Shell', 'WScript.Shell'),
-            (r'CreateObject\s*\(\s*["\']?Shell', 'Shell.Application'),
-            (r'cmd\.exe', 'cmd.exe'),
-            (r'powershell', 'PowerShell'),
-            (r'cscript', 'cscript.exe'),
-            (r'wscript', 'wscript.exe'),
-            (r'mshta', 'mshta.exe'),
-            (r'regsvr32', 'regsvr32.exe'),
-            (r'rundll32', 'rundll32.exe'),
-            (r'certutil', 'certutil.exe'),
-            (r'bitsadmin', 'bitsadmin.exe'),
-        ]
-        download_patterns = [
-            (r'SaveAs|SaveToFile|\.Write', 'File save operation'),
-            (r'ADODB\.Stream', 'ADODB Stream'),
-            (r'Scripting\.FileSystemObject', 'FileSystemObject'),
-        ]
-
-        try:
-            vba_parser = VBA_Parser(filename, data=file_data)
-
-            if vba_parser.detect_vba_macros():
+            # Check for vbaProject.bin (macros in OOXML)
+            vba_files = [f for f in file_list if 'vbaproject.bin' in f.lower()]
+            if vba_files:
                 results['hasMacros'] = True
-                all_code = ""
+                results['suspiciousPatterns'].append({
+                    'type': 'Macros',
+                    'keyword': 'vbaProject.bin',
+                    'description': 'Document contains VBA macro project'
+                })
 
-                # Extract macro information
-                for (filename_vba, stream_path, vba_filename, vba_code) in vba_parser.extract_macros():
-                    macro_info = {
-                        'filename': vba_filename,
-                        'streamPath': stream_path,
-                        'codePreview': vba_code[:2000] if vba_code else '',  # First 2000 chars
-                        'codeLength': len(vba_code) if vba_code else 0
+                # Try to extract and analyze the VBA content
+                for vba_file in vba_files:
+                    try:
+                        vba_data = zf.read(vba_file)
+                        # Scan binary for suspicious strings
+                        vba_text = vba_data.decode('latin-1', errors='ignore')
+                        all_text_content += vba_text
+
+                        # Look for macro code indicators
+                        if b'Attribute VB_Name' in vba_data or b'Sub ' in vba_data or b'Function ' in vba_data:
+                            results['macros'].append({
+                                'filename': vba_file,
+                                'streamPath': vba_file,
+                                'codePreview': 'VBA macro code detected in binary',
+                                'codeLength': len(vba_data)
+                            })
+                    except Exception:
+                        pass
+
+            # Extract metadata from core.xml
+            if 'docProps/core.xml' in file_list:
+                try:
+                    core_xml = zf.read('docProps/core.xml').decode('utf-8', errors='ignore')
+                    # Parse XML
+                    root = ET.fromstring(core_xml)
+                    ns = {
+                        'dc': 'http://purl.org/dc/elements/1.1/',
+                        'cp': 'http://schemas.openxmlformats.org/package/2006/metadata/core-properties',
+                        'dcterms': 'http://purl.org/dc/terms/'
                     }
-                    results['macros'].append(macro_info)
+                    title_elem = root.find('.//dc:title', ns)
+                    if title_elem is not None and title_elem.text:
+                        results['title'] = title_elem.text
+                    creator_elem = root.find('.//dc:creator', ns)
+                    if creator_elem is not None and creator_elem.text:
+                        results['author'] = creator_elem.text
+                    modified_by = root.find('.//cp:lastModifiedBy', ns)
+                    if modified_by is not None and modified_by.text:
+                        results['lastModifiedBy'] = modified_by.text
+                    created = root.find('.//dcterms:created', ns)
+                    if created is not None and created.text:
+                        results['created'] = created.text
+                    modified = root.find('.//dcterms:modified', ns)
+                    if modified is not None and modified.text:
+                        results['modified'] = modified.text
+                except Exception:
+                    pass
 
-                    if vba_code:
-                        all_code += vba_code + "\n"
+            # Parse relationship files for external references
+            rels_files = [f for f in file_list if f.endswith('.rels')]
+            for rels_file in rels_files:
+                try:
+                    rels_xml = zf.read(rels_file).decode('utf-8', errors='ignore')
+                    # Look for external targets
+                    external_matches = re.findall(r'Target="([^"]+)"[^>]*TargetMode="External"', rels_xml, re.IGNORECASE)
+                    for target in external_matches:
+                        results['externalReferences'].append({
+                            'type': 'External Reference',
+                            'target': target,
+                            'source': rels_file
+                        })
+                        if target.startswith('http'):
+                            results['urls'].append(target)
+                            results['externalLinks'].append(target)
 
-                        # Check for auto-execution triggers
-                        auto_triggers = ['autoopen', 'autoclose', 'autonew', 'autoexec',
-                                       'document_open', 'document_close', 'workbook_open',
-                                       'workbook_close', 'auto_open', 'auto_close']
-                        code_lower = vba_code.lower()
-                        for trigger in auto_triggers:
-                            if trigger in code_lower:
-                                results['autoExecution'].append({
-                                    'trigger': trigger,
-                                    'location': vba_filename
-                                })
-
-                        # Extract URLs
-                        found_urls = url_pattern.findall(vba_code)
-                        results['urls'].extend(found_urls)
-
-                        # Detect HTTP requests
-                        for pattern, desc in http_patterns:
-                            if re.search(pattern, vba_code, re.IGNORECASE):
-                                results['httpRequests'].append({
-                                    'pattern': desc,
-                                    'location': vba_filename
-                                })
-
-                        # Detect process execution
-                        for pattern, desc in process_patterns:
-                            matches = re.findall(pattern, vba_code, re.IGNORECASE)
-                            for match in matches:
-                                results['processTriggers'].append({
-                                    'type': desc,
-                                    'location': vba_filename,
-                                    'match': match[:50] if len(match) > 50 else match
-                                })
-
-                        # Detect download/save operations
-                        for pattern, desc in download_patterns:
-                            if re.search(pattern, vba_code, re.IGNORECASE):
-                                results['downloadTargets'].append({
-                                    'pattern': desc,
-                                    'location': vba_filename
-                                })
-
-                # Analyze suspicious patterns
-                analysis = vba_parser.analyze_macros()
-                for kw_type, keyword, description in analysis:
-                    if kw_type in ('AutoExec', 'Suspicious', 'IOC', 'Hex Strings'):
-                        results['suspiciousPatterns'].append({
-                            'type': kw_type,
-                            'keyword': keyword,
-                            'description': description
+                    # Look for oleObject relationships
+                    if 'oleObject' in rels_xml.lower():
+                        results['embeddedObjects'].append({
+                            'type': 'OLE Object',
+                            'description': f'OLE object reference in {rels_file}'
                         })
 
-            vba_parser.close()
+                    # Look for frame/attachedTemplate (can load remote content)
+                    if 'attachedTemplate' in rels_xml.lower() or 'frame' in rels_xml.lower():
+                        template_matches = re.findall(r'Target="([^"]+)"', rels_xml)
+                        for tmpl in template_matches:
+                            if tmpl.startswith('http'):
+                                results['externalReferences'].append({
+                                    'type': 'Remote Template',
+                                    'target': tmpl,
+                                    'source': rels_file
+                                })
+                                results['urls'].append(tmpl)
+                except Exception:
+                    pass
 
-        except Exception as e:
-            # VBA parsing failed, might be a newer format
-            results['parseError'] = str(e)
+            # Extract text content from document.xml, sheet*.xml, slide*.xml
+            content_files = [f for f in file_list if any(x in f.lower() for x in ['document.xml', 'sheet', 'slide', 'workbook'])]
+            for content_file in content_files:
+                if content_file.endswith('.xml'):
+                    try:
+                        content = zf.read(content_file).decode('utf-8', errors='ignore')
+                        all_text_content += content
 
-        # Deduplicate and enrich URLs
-        results['urls'] = list(set(results['urls']))[:50]
-        for url in results['urls'][:20]:
-            enriched = enrich_url(url)
-            download_info = extract_download_info(url)
-            enriched['download'] = download_info
-            results['enrichedUrls'].append(enriched)
+                        # Extract URLs from content
+                        found_urls = url_pattern.findall(content)
+                        results['urls'].extend(found_urls)
 
-        # Try OLE analysis for embedded objects
-        try:
-            from oletools import oleobj
-            for ole in oleobj.find_ole(filename, file_data):
-                if ole:
-                    results['embeddedObjects'].append({
-                        'type': 'OLE Object',
-                        'description': 'Embedded OLE object detected'
+                        # Look for hyperlinks
+                        hyperlinks = re.findall(r'<[^>]*hyperlink[^>]*r:id="([^"]+)"', content, re.IGNORECASE)
+                        if hyperlinks:
+                            results['suspiciousPatterns'].append({
+                                'type': 'Hyperlinks',
+                                'keyword': 'hyperlink',
+                                'description': f'{len(hyperlinks)} hyperlink(s) found in document'
+                            })
+                    except Exception:
+                        pass
+
+            # Check for embedded files in the archive
+            embedded_files = [f for f in file_list if any(x in f.lower() for x in ['embeddings/', 'activeX/', 'oleObject'])]
+            for emb_file in embedded_files:
+                results['embeddedObjects'].append({
+                    'type': 'Embedded File',
+                    'description': emb_file
+                })
+
+    except zipfile.BadZipFile:
+        # Not a ZIP-based format, try OLE parsing
+        pass
+    except Exception as e:
+        results['parseWarning'] = f'OOXML parsing: {str(e)}'
+
+    # Try oletools VBA parsing
+    try:
+        from oletools.olevba import VBA_Parser
+
+        vba_parser = VBA_Parser(filename, data=file_data)
+
+        if vba_parser.detect_vba_macros():
+            results['hasMacros'] = True
+
+            # Extract macro information
+            for (filename_vba, stream_path, vba_filename, vba_code) in vba_parser.extract_macros():
+                macro_info = {
+                    'filename': vba_filename,
+                    'streamPath': stream_path,
+                    'codePreview': vba_code[:2000] if vba_code else '',
+                    'codeLength': len(vba_code) if vba_code else 0
+                }
+                results['macros'].append(macro_info)
+
+                if vba_code:
+                    all_text_content += vba_code + "\n"
+                    code_lower = vba_code.lower()
+
+                    # Check for auto-execution triggers
+                    for trigger in auto_triggers:
+                        if trigger in code_lower:
+                            results['autoExecution'].append({
+                                'trigger': trigger,
+                                'location': vba_filename
+                            })
+
+                    # Extract URLs
+                    found_urls = url_pattern.findall(vba_code)
+                    results['urls'].extend(found_urls)
+
+                    # Detect HTTP requests
+                    for pattern, desc in http_patterns:
+                        if re.search(pattern, vba_code, re.IGNORECASE):
+                            results['httpRequests'].append({
+                                'pattern': desc,
+                                'location': vba_filename
+                            })
+
+                    # Detect process execution
+                    for pattern, desc in process_patterns:
+                        matches = re.findall(pattern, vba_code, re.IGNORECASE)
+                        for match in matches:
+                            results['processTriggers'].append({
+                                'type': desc,
+                                'location': vba_filename,
+                                'match': match[:50] if len(match) > 50 else match
+                            })
+
+                    # Detect download/save operations
+                    for pattern, desc in download_patterns:
+                        if re.search(pattern, vba_code, re.IGNORECASE):
+                            results['downloadTargets'].append({
+                                'pattern': desc,
+                                'location': vba_filename
+                            })
+
+            # Analyze suspicious patterns with oletools
+            analysis = vba_parser.analyze_macros()
+            for kw_type, keyword, description in analysis:
+                if kw_type in ('AutoExec', 'Suspicious', 'IOC', 'Hex Strings', 'Base64 Strings', 'Dridex Strings', 'VBA Stomping'):
+                    results['suspiciousPatterns'].append({
+                        'type': kw_type,
+                        'keyword': keyword,
+                        'description': description
                     })
-        except Exception:
-            pass
 
-        # Deduplicate process triggers
-        seen_triggers = set()
-        unique_triggers = []
-        for trigger in results['processTriggers']:
-            key = (trigger['type'], trigger['location'])
-            if key not in seen_triggers:
-                seen_triggers.add(key)
-                unique_triggers.append(trigger)
-        results['processTriggers'] = unique_triggers
-
-        # Calculate risk score
-        results['riskScore'] = calculate_office_risk_score(results)
-        results['riskLevel'] = get_risk_level(results['riskScore'])
-
-        return results
+        vba_parser.close()
 
     except ImportError:
-        return {'success': False, 'error': 'oletools library not installed. Run: pip install oletools'}
+        results['parseWarning'] = 'oletools not installed - VBA analysis limited'
     except Exception as e:
-        return {'success': False, 'error': f'Failed to parse Office document: {str(e)}'}
+        if 'parseError' not in results:
+            results['parseError'] = str(e)
+
+    # Scan all collected text for suspicious patterns
+    if all_text_content:
+        content_lower = all_text_content.lower()
+
+        # Check for auto-execution triggers in raw content
+        for trigger in auto_triggers:
+            if trigger in content_lower and not any(t['trigger'] == trigger for t in results['autoExecution']):
+                results['autoExecution'].append({
+                    'trigger': trigger,
+                    'location': 'document content'
+                })
+
+        # Check for process execution patterns
+        for pattern, desc in process_patterns:
+            if re.search(pattern, all_text_content, re.IGNORECASE):
+                if not any(t['type'] == desc for t in results['processTriggers']):
+                    results['processTriggers'].append({
+                        'type': desc,
+                        'location': 'document content',
+                        'match': ''
+                    })
+
+        # Check for HTTP patterns
+        for pattern, desc in http_patterns:
+            if re.search(pattern, all_text_content, re.IGNORECASE):
+                if not any(r['pattern'] == desc for r in results['httpRequests']):
+                    results['httpRequests'].append({
+                        'pattern': desc,
+                        'location': 'document content'
+                    })
+
+        # Extract any remaining URLs
+        found_urls = url_pattern.findall(all_text_content)
+        results['urls'].extend(found_urls)
+
+    # Try OLE analysis for embedded objects
+    try:
+        from oletools import oleobj
+        for ole in oleobj.find_ole(filename, file_data):
+            if ole:
+                results['embeddedObjects'].append({
+                    'type': 'OLE Object',
+                    'description': 'Embedded OLE object detected by oleobj'
+                })
+    except Exception:
+        pass
+
+    # Deduplicate URLs and external references
+    results['urls'] = list(set(results['urls']))[:50]
+    results['externalLinks'] = list(set(results['externalLinks']))[:20]
+
+    # Deduplicate process triggers
+    seen_triggers = set()
+    unique_triggers = []
+    for trigger in results['processTriggers']:
+        key = (trigger['type'], trigger.get('location', ''))
+        if key not in seen_triggers:
+            seen_triggers.add(key)
+            unique_triggers.append(trigger)
+    results['processTriggers'] = unique_triggers
+
+    # Deduplicate auto-execution
+    seen_auto = set()
+    unique_auto = []
+    for auto in results['autoExecution']:
+        key = auto['trigger']
+        if key not in seen_auto:
+            seen_auto.add(key)
+            unique_auto.append(auto)
+    results['autoExecution'] = unique_auto
+
+    # Enrich URLs
+    for url in results['urls'][:20]:
+        enriched = enrich_url(url)
+        download_info = extract_download_info(url)
+        enriched['download'] = download_info
+        results['enrichedUrls'].append(enriched)
+
+    # Calculate risk score
+    results['riskScore'] = calculate_office_risk_score(results)
+    results['riskLevel'] = get_risk_level(results['riskScore'])
+
+    # Automatic IOC investigation using threat intel APIs
+    if THREAT_INTEL_AVAILABLE and results['urls']:
+        investigation_urls = list(set(results['urls']))[:10]
+        ioc_investigation = investigate_iocs(
+            urls=investigation_urls,
+            max_per_type=5
+        )
+        results['iocInvestigation'] = ioc_investigation
+
+        # Update risk score based on IOC findings
+        if ioc_investigation.get('summary', {}).get('maliciousIOCs', 0) > 0:
+            ioc_risk = ioc_investigation['summary'].get('overallRiskScore', 0)
+            results['riskScore'] = max(results['riskScore'], ioc_risk)
+            results['riskLevel'] = get_risk_level(results['riskScore'])
+            results['suspiciousPatterns'].append({
+                'type': 'ThreatIntel',
+                'keyword': 'malicious_url',
+                'description': f"Threat intelligence: {ioc_investigation['summary']['maliciousIOCs']} malicious URLs detected"
+            })
+
+    return results
 
 
 def calculate_office_risk_score(results):
@@ -1969,34 +2325,52 @@ def calculate_office_risk_score(results):
     score = 0
 
     # Has macros is already suspicious
-    if results['hasMacros']:
-        score += 20
+    if results.get('hasMacros'):
+        score += 25
 
     # Auto-execution is high risk
-    score += len(results['autoExecution']) * 25
+    score += len(results.get('autoExecution', [])) * 20
 
     # Suspicious patterns
-    for pattern in results['suspiciousPatterns']:
-        if pattern['type'] == 'AutoExec':
+    for pattern in results.get('suspiciousPatterns', []):
+        ptype = pattern.get('type', '')
+        if ptype == 'AutoExec':
             score += 20
-        elif pattern['type'] == 'Suspicious':
+        elif ptype == 'Suspicious':
             score += 15
-        elif pattern['type'] == 'IOC':
+        elif ptype == 'IOC':
             score += 25
+        elif ptype == 'Macros':
+            score += 15
+        elif ptype == 'ThreatIntel':
+            score += 30
         else:
             score += 10
 
     # Embedded objects
-    score += len(results['embeddedObjects']) * 15
+    score += min(len(results.get('embeddedObjects', [])) * 10, 30)
 
-    # Process triggers
-    score += len(results['processTriggers']) * 15
+    # External references (can load remote content)
+    score += min(len(results.get('externalReferences', [])) * 15, 45)
 
-    # HTTP requests
-    score += len(results['httpRequests']) * 10
+    # External links
+    score += min(len(results.get('externalLinks', [])) * 5, 20)
+
+    # Process triggers (Shell, PowerShell, etc.)
+    score += min(len(results.get('processTriggers', [])) * 15, 45)
+
+    # HTTP requests in macros
+    score += min(len(results.get('httpRequests', [])) * 10, 30)
 
     # Download targets
-    score += len(results['downloadTargets']) * 10
+    score += min(len(results.get('downloadTargets', [])) * 10, 30)
+
+    # URLs in document (especially if many)
+    url_count = len(results.get('urls', []))
+    if url_count > 5:
+        score += 10
+    elif url_count > 0:
+        score += 5
 
     return min(score, 100)
 
@@ -2013,13 +2387,72 @@ def get_risk_level(score):
         return 'Low'
 
 
+def analyze_qrcode(file_data):
+    """Analyze image file for QR codes"""
+    result = {
+        'success': True,
+        'file_type': 'qrcode',
+        'qr_codes': [],
+        'total_codes': 0,
+        'image_info': {}
+    }
+
+    try:
+        from PIL import Image
+
+        # Get image info
+        img = Image.open(io.BytesIO(file_data))
+        result['image_info'] = {
+            'format': img.format,
+            'mode': img.mode,
+            'width': img.width,
+            'height': img.height
+        }
+
+        # Decode QR codes
+        qr_codes = decode_qr_codes(file_data)
+        result['qr_codes'] = qr_codes
+        result['total_codes'] = len(qr_codes)
+
+        # Calculate overall risk score
+        max_risk = 0
+        for qr in qr_codes:
+            for indicator in qr.get('risk_indicators', []):
+                severity = indicator.get('severity', 'low')
+                if severity == 'high':
+                    max_risk = max(max_risk, 75)
+                elif severity == 'medium':
+                    max_risk = max(max_risk, 50)
+                else:
+                    max_risk = max(max_risk, 25)
+
+        result['risk_score'] = max_risk
+        result['risk_level'] = get_risk_level(max_risk)
+
+        if not qr_codes:
+            result['message'] = 'No QR codes detected in the image'
+
+    except ImportError as e:
+        result['success'] = False
+        result['error'] = 'Required libraries not installed (PIL, pyzbar)'
+    except Exception as e:
+        result['success'] = False
+        result['error'] = f'Failed to analyze image: {str(e)}'
+
+    return result
+
+
 # ============================================================================
 # HTTP Handler
 # ============================================================================
 
 class IPLookupHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=os.path.join(os.path.dirname(__file__), 'public'), **kwargs)
+        # Prefer React build if available, fallback to public directory
+        react_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist')
+        public_dir = os.path.join(os.path.dirname(__file__), 'public')
+        static_dir = react_dist if os.path.isdir(react_dist) else public_dir
+        super().__init__(*args, directory=static_dir, **kwargs)
 
     def do_GET(self):
         if self.path == '/api/my-ip':
@@ -2028,7 +2461,16 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             self.handle_lookup()
         elif self.path == '/api/status':
             self.handle_status()
+        elif self.path == '/api/threat-intel/status':
+            self.handle_threat_intel_status()
+        elif self.path == '/api/threat-intel/cache/stats':
+            self.handle_cache_stats()
+        elif self.path.startswith('/api/threat-intel/cache/search'):
+            self.handle_cache_search()
         else:
+            # For SPA routing: serve index.html for non-file paths
+            if not self.path.startswith('/api') and '.' not in self.path.split('/')[-1]:
+                self.path = '/index.html'
             super().do_GET()
 
     def do_POST(self):
@@ -2039,8 +2481,22 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             self.handle_file_analysis('pdf')
         elif self.path == '/api/analyze/office':
             self.handle_file_analysis('office')
+        elif self.path == '/api/analyze/qrcode':
+            self.handle_file_analysis('qrcode')
         elif self.path.startswith('/api/results/'):
             self.handle_results_get()
+        elif self.path == '/api/threat-intel/investigate':
+            self.handle_ioc_investigation()
+        elif self.path == '/api/threat-intel/investigate/ip':
+            self.handle_ip_investigation()
+        elif self.path == '/api/threat-intel/investigate/url':
+            self.handle_url_investigation()
+        elif self.path == '/api/threat-intel/investigate/hash':
+            self.handle_hash_investigation()
+        elif self.path == '/api/threat-intel/cache/clear':
+            self.handle_cache_clear()
+        elif self.path == '/api/threat-intel/cache/cleanup':
+            self.handle_cache_cleanup()
         else:
             self.send_json({'error': 'Not found'}, 404)
 
@@ -2073,9 +2529,181 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             'cleanedExpired': cleaned,
             'expirationDays': EXPIRATION_DAYS,
             'features': {
-                'qrCodeDetection': qr_available
+                'qrCodeDetection': qr_available,
+                'threatIntel': THREAT_INTEL_AVAILABLE
             }
         })
+
+    def handle_threat_intel_status(self):
+        """Return threat intelligence service status"""
+        status = get_threat_intel_status()
+        self.send_json(status)
+
+    def handle_ioc_investigation(self):
+        """Handle POST /api/threat-intel/investigate - investigate multiple IOCs"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            ips = data.get('ips', [])
+            urls = data.get('urls', [])
+            hashes = data.get('hashes', [])
+            max_per_type = data.get('maxPerType', 5)
+
+            if not ips and not urls and not hashes:
+                self.send_json({'error': 'No IOCs provided. Include ips, urls, or hashes array.'}, 400)
+                return
+
+            result = investigate_iocs(ips=ips, urls=urls, hashes=hashes, max_per_type=max_per_type)
+            self.send_json(result)
+
+        except json.JSONDecodeError:
+            self.send_json({'error': 'Invalid JSON'}, 400)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_ip_investigation(self):
+        """Handle POST /api/threat-intel/investigate/ip - investigate single IP"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            ip = data.get('ip')
+            if not ip:
+                self.send_json({'error': 'IP address required'}, 400)
+                return
+
+            if THREAT_INTEL_AVAILABLE:
+                result = threat_intel.investigate_ip(ip)
+                self.send_json(result)
+            else:
+                self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+        except json.JSONDecodeError:
+            self.send_json({'error': 'Invalid JSON'}, 400)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_url_investigation(self):
+        """Handle POST /api/threat-intel/investigate/url - investigate single URL"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            url = data.get('url')
+            if not url:
+                self.send_json({'error': 'URL required'}, 400)
+                return
+
+            if THREAT_INTEL_AVAILABLE:
+                result = threat_intel.investigate_url(url)
+                self.send_json(result)
+            else:
+                self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+        except json.JSONDecodeError:
+            self.send_json({'error': 'Invalid JSON'}, 400)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_hash_investigation(self):
+        """Handle POST /api/threat-intel/investigate/hash - investigate file hash"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            file_hash = data.get('hash')
+            if not file_hash:
+                self.send_json({'error': 'File hash required'}, 400)
+                return
+
+            if THREAT_INTEL_AVAILABLE:
+                result = threat_intel.investigate_hash(file_hash)
+                self.send_json(result)
+            else:
+                self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+        except json.JSONDecodeError:
+            self.send_json({'error': 'Invalid JSON'}, 400)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_cache_stats(self):
+        """Handle GET /api/threat-intel/cache/stats - get cache statistics"""
+        if THREAT_INTEL_AVAILABLE:
+            stats = threat_intel.get_cache_stats()
+            self.send_json(stats)
+        else:
+            self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+    def handle_cache_search(self):
+        """Handle GET /api/threat-intel/cache/search?q=query - search cache"""
+        try:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            query = params.get('q', [''])[0]
+            limit = int(params.get('limit', [50])[0])
+
+            if not query:
+                self.send_json({'error': 'Query parameter "q" required'}, 400)
+                return
+
+            if THREAT_INTEL_AVAILABLE:
+                results = threat_intel.search_cache(query, limit)
+                self.send_json({
+                    'query': query,
+                    'count': len(results),
+                    'results': results
+                })
+            else:
+                self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_cache_clear(self):
+        """Handle POST /api/threat-intel/cache/clear - clear cache entries"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+            data = json.loads(body) if body else {}
+
+            ioc_type = data.get('type')  # Optional: ip, url, hash
+            source = data.get('source')  # Optional: virustotal, abuseipdb, etc.
+
+            if THREAT_INTEL_AVAILABLE:
+                deleted = threat_intel.clear_cache(ioc_type=ioc_type, source=source)
+                self.send_json({
+                    'success': True,
+                    'deleted': deleted,
+                    'filter': {
+                        'type': ioc_type,
+                        'source': source
+                    }
+                })
+            else:
+                self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+        except json.JSONDecodeError:
+            self.send_json({'error': 'Invalid JSON'}, 400)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_cache_cleanup(self):
+        """Handle POST /api/threat-intel/cache/cleanup - remove expired entries"""
+        if THREAT_INTEL_AVAILABLE:
+            cleaned = threat_intel.cleanup_expired_cache()
+            self.send_json({
+                'success': True,
+                'expiredRemoved': cleaned
+            })
+        else:
+            self.send_json({'error': 'Threat intelligence module not available'}, 503)
 
     def handle_results_get(self):
         """Handle POST /api/results/{entry_ref} for result retrieval"""
@@ -2236,6 +2864,20 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                     return
 
                 result = analyze_office(file_data, filename)
+
+            elif analysis_type == 'qrcode':
+                # Check for image magic bytes
+                is_png = file_data[:8] == b'\x89PNG\r\n\x1a\n'
+                is_jpeg = file_data[:2] == b'\xff\xd8'
+                is_gif = file_data[:6] in (b'GIF87a', b'GIF89a')
+                is_bmp = file_data[:2] == b'BM'
+                is_webp = file_data[:4] == b'RIFF' and file_data[8:12] == b'WEBP'
+
+                if not (is_png or is_jpeg or is_gif or is_bmp or is_webp):
+                    self.send_json({'error': 'Invalid image file. Supported formats: PNG, JPEG, GIF, BMP, WebP'}, 400)
+                    return
+
+                result = analyze_qrcode(file_data)
             else:
                 self.send_json({'error': 'Unknown analysis type'}, 400)
                 return

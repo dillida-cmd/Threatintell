@@ -2,8 +2,13 @@
 .msb_master_key
 .msb_key_salt
 
+# API Keys (sensitive - never commit)
+api_keys.json
+
 # Database
 analysis_results.db
+ioc_cache.db
+*.db
 
 # Python
 __pycache__/
