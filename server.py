@@ -2449,7 +2449,7 @@ def analyze_qrcode(file_data):
 class IPLookupHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         # Prefer React build if available, fallback to public directory
-        react_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist')
+        react_dist = os.path.join(os.path.dirname(__file__), 'frontend', 'dist')
         public_dir = os.path.join(os.path.dirname(__file__), 'public')
         static_dir = react_dist if os.path.isdir(react_dist) else public_dir
         super().__init__(*args, directory=static_dir, **kwargs)
