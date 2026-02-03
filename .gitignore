@@ -39,3 +39,16 @@ node_modules/
 
 # Build output (keep for deployment, but optional)
 # frontend/dist/
+
+# Generated exports
+exports/
+
+# Screenshots
+screenshots/
+
+# Old/backup files
+frontend_old/
+nicegui_frontend.py
+
+# Temporary files
+/tmp/
