@@ -30,14 +30,16 @@ Export investigated IOCs for import into your SIEM or Azure Sentinel:
 
 The platform aggregates data from multiple sources:
 
-- AbuseIPDB - IP abuse reports and confidence scores
-- VirusTotal - Multi-AV scanning and URL/hash analysis
-- IPQualityScore - Fraud scoring, VPN/proxy/Tor detection
-- AlienVault OTX - Threat pulses and IOC correlation
-- GreyNoise - Internet scanner and bot classification
-- Shodan - Open ports and service enumeration
-- ThreatFox - Malware IOC database
-- URLhaus - Malware URL tracking
+| Source | Data Provided |
+|--------|---------------|
+| AbuseIPDB | IP abuse reports and confidence scores |
+| VirusTotal | Multi-AV scanning and URL/hash analysis |
+| IPQualityScore | Fraud scoring, VPN/proxy/Tor detection |
+| AlienVault OTX | Threat pulses and IOC correlation |
+| GreyNoise | Internet scanner and bot classification |
+| Shodan | Open ports and service enumeration |
+| ThreatFox | Malware IOC database |
+| URLhaus | Malware URL tracking |
 
 ## Tech Stack
 
@@ -52,7 +54,25 @@ The platform aggregates data from multiple sources:
 - Tailwind CSS (dark theme)
 - Lucide React icons
 
-## Installation
+## Quick Installation
+
+### One-Line Install
+
+```bash
+git clone https://github.com/dillida-cmd/Threatintell.git && cd Threatintell && chmod +x install.sh && ./install.sh
+```
+
+### What the Installer Does
+
+1. Checks for Python 3.8+ and Node.js 18+
+2. Installs Python dependencies
+3. Installs frontend dependencies
+4. Builds the React frontend
+5. Creates `api_keys.json` template
+6. Creates start/stop scripts
+7. **Optionally installs as a system service (auto-start on boot)**
+
+## Manual Installation
 
 ### Prerequisites
 
@@ -60,7 +80,7 @@ The platform aggregates data from multiple sources:
 - Node.js 18+
 - API keys for threat intelligence services
 
-### Setup
+### Step-by-Step
 
 1. Clone the repository:
 ```bash
@@ -70,13 +90,15 @@ cd Threatintell
 
 2. Install Python dependencies:
 ```bash
-pip install flask requests oletools python-magic
+pip install -r requirements.txt
 ```
 
-3. Install frontend dependencies:
+3. Install frontend dependencies and build:
 ```bash
 cd frontend
 npm install
+npm run build
+cd ..
 ```
 
 4. Create `api_keys.json` in the root directory:
@@ -109,28 +131,55 @@ npm install
 }
 ```
 
-5. Build the frontend:
-```bash
-cd frontend
-npm run build
-```
-
-6. Start the server:
+5. Start the server:
 ```bash
 python server.py
 ```
 
-7. Open http://localhost:3000 in your browser
+## Running as a Service (Auto-Start on Boot)
 
-## Development
+### During Installation
 
-Run the frontend dev server with hot reload:
-```bash
-cd frontend
-npm run dev
+When running `./install.sh`, answer **y** when prompted:
+```
+Would you like to install as a system service? (auto-start on boot)
+Install service? [y/N]: y
 ```
 
-The dev server proxies API requests to the Python backend on port 3000.
+### Manual Service Installation
+
+```bash
+sudo ./install-service.sh
+```
+
+### Service Commands
+
+```bash
+sudo systemctl start manny-threatintel    # Start server
+sudo systemctl stop manny-threatintel     # Stop server
+sudo systemctl restart manny-threatintel  # Restart server
+sudo systemctl status manny-threatintel   # Check status
+sudo journalctl -u manny-threatintel -f   # View logs
+```
+
+### Uninstall Service
+
+```bash
+sudo ./uninstall-service.sh
+```
+
+## Network Access
+
+The server listens on all network interfaces (`0.0.0.0:3000`), allowing access from other devices on your network.
+
+**Access URLs:**
+- Local: `http://localhost:3000`
+- Network: `http://<your-ip>:3000`
+
+To find your IP address:
+```bash
+hostname -I | awk '{print $1}'
+```
 
 ## API Endpoints
 
@@ -160,14 +209,17 @@ The dev server proxies API requests to the Python backend on port 3000.
 - `min_risk` - Minimum risk score (0-100)
 - `limit` - Maximum records to export (default: 1000)
 
-**Example: Export malicious IPs in Sentinel format**
-```bash
-curl "http://localhost:3000/api/ioc/export/ips?format=sentinel&malicious=true"
-```
+**Examples:**
 
-**Example: Export all IOCs with risk score >= 50 as CSV**
 ```bash
+# Export malicious IPs in Sentinel format
+curl "http://localhost:3000/api/ioc/export/ips?format=sentinel&malicious=true"
+
+# Export all IOCs with risk score >= 50 as CSV
 curl "http://localhost:3000/api/ioc/export?format=csv&min_risk=50"
+
+# Export all hashes as JSON
+curl "http://localhost:3000/api/ioc/export/hashes"
 ```
 
 ### File Analysis
@@ -184,69 +236,113 @@ curl "http://localhost:3000/api/ioc/export?format=csv&min_risk=50"
 ### IOC Tables
 
 **ioc_ips** - Stores investigated IP addresses
-```sql
-- ip (unique)
-- is_malicious, risk_score, abuse_score
-- is_tor, is_proxy, is_vpn, is_hosting
-- country, country_code, city, isp, org, asn
-- tags, malware_families, threat_types
-- first_seen, last_seen, last_updated
-```
+- `ip` (unique), `is_malicious`, `risk_score`, `abuse_score`
+- `is_tor`, `is_proxy`, `is_vpn`, `is_hosting`
+- `country`, `country_code`, `city`, `isp`, `org`, `asn`
+- `tags`, `malware_families`, `threat_types`
+- `first_seen`, `last_seen`, `last_updated`
 
 **ioc_urls** - Stores investigated URLs
-```sql
-- url (unique), domain
-- is_malicious, risk_score
-- vt_malicious, vt_suspicious, vt_harmless
-- urlhaus_status, threat_type, malware_family
-- tags, categories
-- first_seen, last_seen, last_updated
-```
+- `url` (unique), `domain`, `is_malicious`, `risk_score`
+- `vt_malicious`, `vt_suspicious`, `vt_harmless`
+- `urlhaus_status`, `threat_type`, `malware_family`
+- `tags`, `categories`
+- `first_seen`, `last_seen`, `last_updated`
 
 **ioc_hashes** - Stores investigated file hashes
-```sql
-- hash_value (unique), hash_type
-- is_malicious, risk_score
-- vt_malicious, vt_suspicious, vt_harmless
-- file_name, file_type, file_size
-- malware_family, threat_type, tags
-- first_seen, last_seen, last_updated
-```
+- `hash_value` (unique), `hash_type`, `is_malicious`, `risk_score`
+- `vt_malicious`, `vt_suspicious`, `vt_harmless`
+- `file_name`, `file_type`, `file_size`
+- `malware_family`, `threat_type`, `tags`
+- `first_seen`, `last_seen`, `last_updated`
 
-## Sentinel/SIEM Integration
+## SIEM Integration Examples
 
 ### Azure Sentinel
 
-1. Export IOCs in STIX format:
 ```bash
+# Export IOCs in STIX 2.1 format
 curl "http://localhost:3000/api/ioc/export?format=sentinel&malicious=true" > iocs.json
 ```
 
-2. Import using Microsoft Graph Security API or Azure Sentinel Threat Intelligence connector
+Import using Microsoft Graph Security API or Azure Sentinel Threat Intelligence connector.
 
 ### Splunk
 
-1. Export IOCs in CSV format:
 ```bash
+# Export IOCs in CSV format
 curl "http://localhost:3000/api/ioc/export/ips?format=csv" > ip_iocs.csv
 ```
 
-2. Upload to Splunk as a lookup table or use the Threat Intelligence Framework
+Upload to Splunk as a lookup table or use the Threat Intelligence Framework.
 
 ### Generic SIEM
 
-Use the JSON export format for maximum flexibility:
 ```bash
+# Export all IOCs as JSON
 curl "http://localhost:3000/api/ioc/export?format=json"
+```
+
+## Project Structure
+
+```
+Threatintell/
+├── server.py              # Main Python backend
+├── threat_intel.py        # Threat intelligence module
+├── requirements.txt       # Python dependencies
+├── api_keys.json          # API keys (not in repo)
+├── install.sh             # Main installer
+├── install-service.sh     # Service installer
+├── uninstall-service.sh   # Service uninstaller
+├── manny-threatintel.service  # Systemd unit file
+├── start.sh               # Quick start script
+├── stop.sh                # Quick stop script
+├── README.md              # This file
+└── frontend/              # React frontend
+    ├── src/
+    │   ├── components/    # React components
+    │   ├── hooks/         # Custom hooks
+    │   ├── api/           # API client
+    │   └── types/         # TypeScript types
+    ├── dist/              # Production build
+    └── package.json       # Node dependencies
 ```
 
 ## Security Notes
 
-- API keys are stored locally and never committed to the repository
+- API keys are stored locally in `api_keys.json` (excluded from git)
 - File analysis is performed locally without uploading to external services
 - Analysis results are cached with configurable expiration
 - Sensitive data is encrypted at rest
+- Database files (`*.db`) are excluded from git
+
+## Troubleshooting
+
+### Port already in use
+```bash
+# Find and kill process using port 3000
+lsof -i :3000
+kill -9 <PID>
+```
+
+### Service not starting
+```bash
+# Check service logs
+sudo journalctl -u manny-threatintel -n 50
+
+# Check service status
+sudo systemctl status manny-threatintel
+```
+
+### API keys not working
+- Ensure `api_keys.json` exists in the root directory
+- Set `"enabled": true` for each service you want to use
+- Verify API keys are valid and have sufficient quota
 
 ## License
 
 MIT License
+
+## Author
+
+Built with security analysts in mind.
