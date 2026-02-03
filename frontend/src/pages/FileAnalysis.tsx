@@ -6,6 +6,7 @@ import {
 import { analyzeFile } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
+import { defangUrl, defangIp, defangDomain, defangEmail } from '../utils/defang'
 
 const MAX_FILE_SIZE = 15 * 1024 * 1024 // 15MB
 
@@ -853,11 +854,11 @@ function QrCodeResultsView({ analysis }: { analysis: any }) {
 
             {qr.urls?.length > 0 && (
               <div className="mb-4">
-                <span className="text-gray-400 text-sm">URLs Found:</span>
+                <span className="text-gray-400 text-sm">URLs Found (defanged):</span>
                 <div className="mt-2 space-y-1">
                   {qr.urls.map((url: string, j: number) => (
-                    <code key={j} className="block p-2 bg-dark-600 rounded text-primary-400 text-xs break-all">
-                      {url}
+                    <code key={j} className="block p-2 bg-dark-600 rounded text-orange-400 text-xs break-all select-all" title="Defanged URL">
+                      {defangUrl(url)}
                     </code>
                   ))}
                 </div>
@@ -947,10 +948,10 @@ function SandboxResultsView({ analysis, riskScore }: { analysis: any; riskScore:
             {network.map((conn: any, i: number) => (
               <div key={i} className="flex items-center gap-2 p-2 bg-dark-500 rounded">
                 <span className="badge badge-info">{conn.protocol || 'TCP'}</span>
-                <code className="text-primary-400 text-sm">
-                  {conn.remoteIp || conn.ip}:{conn.remotePort || conn.port}
+                <code className="text-orange-400 text-sm select-all" title="Defanged IP">
+                  {defangIp(conn.remoteIp || conn.ip)}:{conn.remotePort || conn.port}
                 </code>
-                {conn.domain && <span className="text-gray-400 text-xs">({conn.domain})</span>}
+                {conn.domain && <span className="text-gray-400 text-xs">({defangDomain(conn.domain)})</span>}
               </div>
             ))}
           </div>
@@ -1060,8 +1061,8 @@ function UrlList({ urls, title }: { urls: string[]; title: string }) {
       </h3>
       <div className="space-y-2 max-h-60 overflow-y-auto">
         {urls.slice(0, 50).map((url, i) => (
-          <code key={i} className="block p-2 bg-dark-500 rounded text-primary-400 text-xs break-all">
-            {url}
+          <code key={i} className="block p-2 bg-dark-500 rounded text-orange-400 text-xs break-all select-all" title="Defanged URL - safe to copy">
+            {defangUrl(url)}
           </code>
         ))}
       </div>
@@ -1075,6 +1076,7 @@ function IocDisplay({ iocs }: { iocs: any }) {
       <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
         <Globe className="h-5 w-5 text-primary-500" />
         Extracted IOCs
+        <span className="text-xs text-gray-500 font-normal ml-2">(defanged for safety)</span>
       </h3>
 
       {iocs.ips?.length > 0 && (
@@ -1082,7 +1084,7 @@ function IocDisplay({ iocs }: { iocs: any }) {
           <h4 className="text-orange-400 text-sm font-semibold mb-2">IP Addresses ({iocs.ips.length})</h4>
           <div className="flex flex-wrap gap-2">
             {iocs.ips.map((ip: string, i: number) => (
-              <span key={i} className="badge badge-warning">{ip}</span>
+              <span key={i} className="badge badge-warning select-all" title="Defanged IP">{defangIp(ip)}</span>
             ))}
           </div>
         </div>
@@ -1093,7 +1095,7 @@ function IocDisplay({ iocs }: { iocs: any }) {
           <h4 className="text-blue-400 text-sm font-semibold mb-2">Domains ({iocs.domains.length})</h4>
           <div className="flex flex-wrap gap-2">
             {iocs.domains.map((domain: string, i: number) => (
-              <span key={i} className="badge badge-info">{domain}</span>
+              <span key={i} className="badge badge-info select-all" title="Defanged domain">{defangDomain(domain)}</span>
             ))}
           </div>
         </div>
@@ -1104,8 +1106,8 @@ function IocDisplay({ iocs }: { iocs: any }) {
           <h4 className="text-primary-400 text-sm font-semibold mb-2">URLs ({iocs.urls.length})</h4>
           <div className="space-y-1 max-h-32 overflow-y-auto">
             {iocs.urls.slice(0, 20).map((url: string, i: number) => (
-              <code key={i} className="block p-2 bg-dark-500 rounded text-primary-400 text-xs break-all">
-                {url}
+              <code key={i} className="block p-2 bg-dark-500 rounded text-orange-400 text-xs break-all select-all" title="Defanged URL">
+                {defangUrl(url)}
               </code>
             ))}
           </div>

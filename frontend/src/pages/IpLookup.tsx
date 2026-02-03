@@ -3,6 +3,7 @@ import { Search, Globe, MapPin, Server, Shield, AlertTriangle, Wifi, Eye, Bot } 
 import { lookupIp } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
+import { defangIp, defangDomain } from '../utils/defang'
 
 export default function IpLookup() {
   const [ip, setIp] = useState('')
@@ -318,10 +319,10 @@ export default function IpLookup() {
 
               {sources.shodan.hostnames?.length > 0 && (
                 <div className="mb-4">
-                  <h4 className="text-gray-400 text-sm font-semibold mb-2">Hostnames</h4>
+                  <h4 className="text-gray-400 text-sm font-semibold mb-2">Hostnames <span className="text-xs text-gray-500 font-normal">(defanged)</span></h4>
                   <div className="flex flex-wrap gap-2">
                     {sources.shodan.hostnames.map((hostname: string, i: number) => (
-                      <span key={i} className="badge badge-info">{hostname}</span>
+                      <span key={i} className="badge badge-info select-all" title="Defanged hostname">{defangDomain(hostname)}</span>
                     ))}
                   </div>
                 </div>

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Search, AlertTriangle, CheckCircle, Clock, FileText, Download } from 'lucide-react'
 import { downloadPdfReport, retrieveAnalysis } from '../api/client'
+import { defangUrl, defangIp, defangDomain } from '../utils/defang'
 
 interface RetrievedResult {
   success: boolean
@@ -271,11 +272,12 @@ function RetrieveAnalysis() {
                 <div className="card">
                   <h4 className="text-lg font-semibold text-white mb-4">
                     Extracted URLs ({result.urls.length})
+                    <span className="text-xs text-gray-500 font-normal ml-2">(defanged for safety)</span>
                   </h4>
                   <div className="space-y-2">
                     {result.urls.map((url: string, idx: number) => (
-                      <div key={idx} className="bg-dark-400 p-2 rounded text-sm font-mono text-gray-300 break-all">
-                        {url}
+                      <div key={idx} className="bg-dark-400 p-2 rounded text-sm font-mono text-orange-400 break-all select-all" title="Defanged URL - safe to copy">
+                        {defangUrl(url)}
                       </div>
                     ))}
                   </div>
@@ -353,12 +355,12 @@ function RetrieveAnalysis() {
               {/* Malicious URLs */}
               {result.iocInvestigation.urls?.filter((u: any) => u.summary?.isMalicious).length > 0 && (
                 <div className="space-y-2">
-                  <h5 className="text-sm font-medium text-red-400">Malicious URLs Detected</h5>
+                  <h5 className="text-sm font-medium text-red-400">Malicious URLs Detected (defanged)</h5>
                   {result.iocInvestigation.urls
                     .filter((u: any) => u.summary?.isMalicious)
                     .map((url: any, idx: number) => (
                       <div key={idx} className="bg-red-500/10 border border-red-500/30 p-3 rounded-lg">
-                        <p className="text-white font-mono text-sm break-all">{url.url}</p>
+                        <p className="text-orange-400 font-mono text-sm break-all select-all" title="Defanged URL">{defangUrl(url.url)}</p>
                         <p className="text-xs text-red-400 mt-1">
                           {url.summary?.findings?.join(', ')}
                         </p>

@@ -3,6 +3,7 @@ import { Search, Link, Shield, AlertTriangle, Camera, ExternalLink, Globe, Arrow
 import { lookupUrlThreat, analyzeUrl } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
+import { defangUrl, defangIp, defangDomain } from '../utils/defang'
 
 // Screenshot zoom modal component
 function ScreenshotModal({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
@@ -207,8 +208,8 @@ function ThreatResults({ results }: { results: any }) {
             <Link className="h-5 w-5 text-primary-500" />
             URL Analysis
           </h3>
-          <code className="block p-3 bg-dark-500 rounded-lg text-primary-400 text-sm break-all mb-4">
-            {results.url}
+          <code className="block p-3 bg-dark-500 rounded-lg text-orange-400 text-sm break-all mb-4 select-all" title="Defanged URL - safe to copy">
+            {defangUrl(results.url)}
           </code>
           <div className="flex flex-wrap gap-2">
             {summary.isMalicious ? (
@@ -356,8 +357,8 @@ function AnalysisResults({ results }: { results: any }) {
             <Camera className="h-5 w-5 text-primary-500" />
             Analysis Results
           </h3>
-          <code className="block p-3 bg-dark-500 rounded-lg text-primary-400 text-sm break-all mb-4">
-            {analysis.url}
+          <code className="block p-3 bg-dark-500 rounded-lg text-orange-400 text-sm break-all mb-4 select-all" title="Defanged URL">
+            {defangUrl(analysis.url)}
           </code>
           <div className="flex flex-wrap gap-2">
             <span className={`badge ${riskScore >= 50 ? 'badge-danger' : riskScore >= 20 ? 'badge-warning' : 'badge-success'}`}>
@@ -438,10 +439,10 @@ function AnalysisResults({ results }: { results: any }) {
 
           {iocs.ips?.length > 0 && (
             <div className="mb-4">
-              <h4 className="text-gray-400 text-sm font-semibold mb-2">IP Addresses ({iocs.ips.length})</h4>
+              <h4 className="text-gray-400 text-sm font-semibold mb-2">IP Addresses ({iocs.ips.length}) <span className="text-xs text-gray-500 font-normal">(defanged)</span></h4>
               <div className="flex flex-wrap gap-2">
                 {iocs.ips.map((ip: string, i: number) => (
-                  <span key={i} className="badge badge-warning">{ip}</span>
+                  <span key={i} className="badge badge-warning select-all" title="Defanged IP">{defangIp(ip)}</span>
                 ))}
               </div>
             </div>
@@ -449,10 +450,10 @@ function AnalysisResults({ results }: { results: any }) {
 
           {iocs.domains?.length > 0 && (
             <div className="mb-4">
-              <h4 className="text-gray-400 text-sm font-semibold mb-2">Domains ({iocs.domains.length})</h4>
+              <h4 className="text-gray-400 text-sm font-semibold mb-2">Domains ({iocs.domains.length}) <span className="text-xs text-gray-500 font-normal">(defanged)</span></h4>
               <div className="flex flex-wrap gap-2">
                 {iocs.domains.map((domain: string, i: number) => (
-                  <span key={i} className="badge badge-info">{domain}</span>
+                  <span key={i} className="badge badge-info select-all" title="Defanged domain">{defangDomain(domain)}</span>
                 ))}
               </div>
             </div>
@@ -460,11 +461,11 @@ function AnalysisResults({ results }: { results: any }) {
 
           {iocs.urls?.length > 0 && (
             <div>
-              <h4 className="text-gray-400 text-sm font-semibold mb-2">URLs ({iocs.urls.length})</h4>
+              <h4 className="text-gray-400 text-sm font-semibold mb-2">URLs ({iocs.urls.length}) <span className="text-xs text-gray-500 font-normal">(defanged)</span></h4>
               <div className="space-y-2 max-h-40 overflow-y-auto">
                 {iocs.urls.slice(0, 20).map((url: string, i: number) => (
-                  <code key={i} className="block p-2 bg-dark-500 rounded text-primary-400 text-xs break-all">
-                    {url}
+                  <code key={i} className="block p-2 bg-dark-500 rounded text-orange-400 text-xs break-all select-all" title="Defanged URL">
+                    {defangUrl(url)}
                   </code>
                 ))}
               </div>
@@ -520,8 +521,8 @@ function RedirectStep({
             )}
           </div>
 
-          <code className="block p-2 bg-dark-600 rounded text-primary-400 text-sm break-all mb-4">
-            {url}
+          <code className="block p-2 bg-dark-600 rounded text-orange-400 text-sm break-all mb-4 select-all" title="Defanged URL - safe to copy">
+            {defangUrl(url)}
           </code>
 
           {screenshot && (
