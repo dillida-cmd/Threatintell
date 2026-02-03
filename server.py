@@ -1,13 +1,32 @@
 #!/usr/bin/env python3
-"""IP Lookup Website Server"""
+"""IP Lookup Website Server with Sandbox Analysis Features and Secure Storage"""
 
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import json
 import urllib.request
 import urllib.error
 import os
+import io
+import re
+import email
+import socket
+import hashlib
+import base64
+import sqlite3
+import threading
+from email import policy
+from email.parser import BytesParser
+from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 PORT = 3000
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+DATABASE_FILE = os.path.join(os.path.dirname(__file__), 'analysis_results.db')
+MASTER_KEY_FILE = os.path.join(os.path.dirname(__file__), '.msb_master_key')
+KEY_SALT_FILE = os.path.join(os.path.dirname(__file__), '.msb_key_salt')
+EXPIRATION_DAYS = 30
+MIN_SECRET_KEY_LENGTH = 8
+PBKDF2_ITERATIONS = 100000
 
 # Get free API key from https://www.abuseipdb.com/account/api
 ABUSEIPDB_API_KEY = os.environ.get('ABUSEIPDB_API_KEY', '')
@@ -39,10 +58,651 @@ ABUSE_CATEGORIES = {
     23: "IoT Targeted"
 }
 
+# Suspicious file extensions for phishing detection
+SUSPICIOUS_EXTENSIONS = {'.exe', '.scr', '.bat', '.cmd', '.ps1', '.vbs', '.js', '.jar', '.msi', '.dll', '.com', '.pif', '.hta', '.wsf'}
+
+# Urgency keywords for phishing detection
+URGENCY_KEYWORDS = [
+    'urgent', 'immediate', 'action required', 'verify your account', 'suspended',
+    'confirm your identity', 'unusual activity', 'unauthorized', 'expire', 'locked',
+    'security alert', 'click here immediately', 'within 24 hours', 'limited time'
+]
+
+# Lookalike domain patterns
+LOOKALIKE_PATTERNS = [
+    (r'paypa[l1]', 'paypal'),
+    (r'amaz[o0]n', 'amazon'),
+    (r'g[o0]{2}gle', 'google'),
+    (r'micros[o0]ft', 'microsoft'),
+    (r'app[l1]e', 'apple'),
+    (r'faceb[o0]{2}k', 'facebook'),
+    (r'netf[l1]ix', 'netflix'),
+    (r'[l1]inkedin', 'linkedin'),
+]
+
+# High-risk file extensions for download detection
+HIGH_RISK_EXTENSIONS = {'.exe', '.dll', '.scr', '.bat', '.cmd', '.ps1', '.vbs', '.js', '.jar', '.msi', '.hta', '.wsf', '.com', '.pif'}
+
+# In-memory cache for external lookups
+_lookup_cache = {}
+_cache_lock = threading.Lock()
+CACHE_TTL = 300  # 5 minutes
+
+# QR Code data patterns for analysis
+QR_URL_PATTERN = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
+QR_EMAIL_PATTERN = re.compile(r'mailto:([^\s?]+)', re.IGNORECASE)
+QR_PHONE_PATTERN = re.compile(r'tel:([+\d\-\s]+)', re.IGNORECASE)
+QR_WIFI_PATTERN = re.compile(r'WIFI:([^;]*;)+', re.IGNORECASE)
+QR_VCARD_PATTERN = re.compile(r'BEGIN:VCARD', re.IGNORECASE)
+
+
+# ============================================================================
+# Encryption Classes
+# ============================================================================
+
+class MasterKeyManager:
+    """Manages the master key for database-level encryption"""
+
+    def __init__(self):
+        from cryptography.fernet import Fernet
+        self.key = self._load_or_create_key()
+        self.fernet = Fernet(self.key)
+
+    def _load_or_create_key(self):
+        """Load existing key or create new one"""
+        from cryptography.fernet import Fernet
+        if os.path.exists(MASTER_KEY_FILE):
+            with open(MASTER_KEY_FILE, 'rb') as f:
+                return f.read()
+        else:
+            key = Fernet.generate_key()
+            # Create with restrictive permissions
+            fd = os.open(MASTER_KEY_FILE, os.O_WRONLY | os.O_CREAT, 0o600)
+            with os.fdopen(fd, 'wb') as f:
+                f.write(key)
+            return key
+
+    def encrypt(self, data):
+        """Encrypt data with master key"""
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        return self.fernet.encrypt(data)
+
+    def decrypt(self, data):
+        """Decrypt data with master key"""
+        return self.fernet.decrypt(data)
+
+
+class SecretKeyManager:
+    """Manages user-provided secret key encryption"""
+
+    def __init__(self):
+        self.salt = self._load_or_create_salt()
+
+    def _load_or_create_salt(self):
+        """Load existing salt or create new one"""
+        if os.path.exists(KEY_SALT_FILE):
+            with open(KEY_SALT_FILE, 'rb') as f:
+                return f.read()
+        else:
+            salt = os.urandom(32)
+            fd = os.open(KEY_SALT_FILE, os.O_WRONLY | os.O_CREAT, 0o600)
+            with os.fdopen(fd, 'wb') as f:
+                f.write(salt)
+            return salt
+
+    def derive_key(self, secret_key):
+        """Derive encryption key from user's secret key using PBKDF2"""
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.fernet import Fernet
+
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=self.salt,
+            iterations=PBKDF2_ITERATIONS,
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(secret_key.encode('utf-8')))
+        return key
+
+    def hash_secret_key(self, secret_key):
+        """Hash the secret key for storage (for validation only)"""
+        return hashlib.sha256((secret_key + self.salt.hex()).encode()).hexdigest()
+
+    def encrypt(self, data, secret_key):
+        """Encrypt data with user's secret key"""
+        from cryptography.fernet import Fernet
+        derived_key = self.derive_key(secret_key)
+        fernet = Fernet(derived_key)
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        return fernet.encrypt(data)
+
+    def decrypt(self, data, secret_key):
+        """Decrypt data with user's secret key"""
+        from cryptography.fernet import Fernet
+        derived_key = self.derive_key(secret_key)
+        fernet = Fernet(derived_key)
+        return fernet.decrypt(data)
+
+
+class EncryptionService:
+    """Two-layer encryption service combining master key and user secret key"""
+
+    def __init__(self):
+        self.master = MasterKeyManager()
+        self.secret = SecretKeyManager()
+
+    def encrypt_results(self, results, secret_key):
+        """Encrypt results with both layers"""
+        # First encrypt with user's secret key
+        json_data = json.dumps(results)
+        user_encrypted = self.secret.encrypt(json_data, secret_key)
+        # Then encrypt with master key
+        return self.master.encrypt(user_encrypted)
+
+    def decrypt_results(self, encrypted_data, secret_key):
+        """Decrypt results with both layers"""
+        # First decrypt with master key
+        user_encrypted = self.master.decrypt(encrypted_data)
+        # Then decrypt with user's secret key
+        decrypted = self.secret.decrypt(user_encrypted, secret_key)
+        return json.loads(decrypted.decode('utf-8'))
+
+    def encrypt_filename(self, filename):
+        """Encrypt filename with master key only"""
+        return self.master.encrypt(filename)
+
+    def decrypt_filename(self, encrypted_filename):
+        """Decrypt filename with master key"""
+        return self.master.decrypt(encrypted_filename).decode('utf-8')
+
+    def hash_secret_key(self, secret_key):
+        """Hash secret key for validation storage"""
+        return self.secret.hash_secret_key(secret_key)
+
+
+# ============================================================================
+# Key Generator for Entry References
+# ============================================================================
+
+class KeyGenerator:
+    """Generates sequential MSB entry references"""
+
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+
+    def get_next_ref(self):
+        """Generate next MSB reference (MSB0001, MSB0002, etc.)"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                # Get current value
+                cursor.execute('SELECT current_value FROM entry_sequence WHERE id = 1')
+                row = cursor.fetchone()
+                if row:
+                    current = row[0]
+                else:
+                    current = 0
+                    cursor.execute('INSERT INTO entry_sequence (id, current_value) VALUES (1, 0)')
+
+                # Increment
+                next_value = current + 1
+                cursor.execute('UPDATE entry_sequence SET current_value = ? WHERE id = 1', (next_value,))
+                conn.commit()
+
+                return f'MSB{next_value:04d}'
+            finally:
+                conn.close()
+
+
+# ============================================================================
+# Result Storage
+# ============================================================================
+
+class ResultStorage:
+    """Stores and retrieves encrypted analysis results"""
+
+    def __init__(self):
+        self.db_path = DATABASE_FILE
+        self.encryption = EncryptionService()
+        self.key_gen = KeyGenerator(self.db_path)
+        self._init_db()
+
+    def _init_db(self):
+        """Initialize database schema"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Main results table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS analysis_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_ref TEXT UNIQUE NOT NULL,
+                secret_key_hash TEXT NOT NULL,
+                original_filename_encrypted BLOB NOT NULL,
+                file_type TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                results_encrypted BLOB NOT NULL,
+                risk_score INTEGER NOT NULL,
+                risk_level TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                access_count INTEGER DEFAULT 0,
+                last_accessed_at TIMESTAMP
+            )
+        ''')
+
+        # Entry sequence table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS entry_sequence (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                current_value INTEGER NOT NULL DEFAULT 0
+            )
+        ''')
+
+        # Access log table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS access_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_ref TEXT NOT NULL,
+                action TEXT NOT NULL,
+                client_ip TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        conn.commit()
+        conn.close()
+
+    def store(self, filename, file_type, file_data, results, secret_key, client_ip=None):
+        """Store analysis results"""
+        entry_ref = self.key_gen.get_next_ref()
+
+        # Calculate file hash
+        file_hash = hashlib.sha256(file_data).hexdigest()
+        file_size = len(file_data)
+
+        # Encrypt data
+        encrypted_filename = self.encryption.encrypt_filename(filename)
+        encrypted_results = self.encryption.encrypt_results(results, secret_key)
+        secret_key_hash = self.encryption.hash_secret_key(secret_key)
+
+        # Calculate expiration
+        expires_at = datetime.now() + timedelta(days=EXPIRATION_DAYS)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                INSERT INTO analysis_results
+                (entry_ref, secret_key_hash, original_filename_encrypted, file_type,
+                 file_hash, file_size, results_encrypted, risk_score, risk_level, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                entry_ref,
+                secret_key_hash,
+                encrypted_filename,
+                file_type,
+                file_hash,
+                file_size,
+                encrypted_results,
+                results.get('riskScore', 0),
+                results.get('riskLevel', 'Low'),
+                expires_at.isoformat()
+            ))
+
+            # Log creation
+            cursor.execute('''
+                INSERT INTO access_log (entry_ref, action, client_ip)
+                VALUES (?, 'created', ?)
+            ''', (entry_ref, client_ip))
+
+            conn.commit()
+            return entry_ref, expires_at.isoformat()
+
+        finally:
+            conn.close()
+
+    def retrieve(self, entry_ref, secret_key, client_ip=None):
+        """Retrieve and decrypt analysis results"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                SELECT secret_key_hash, original_filename_encrypted, file_type,
+                       file_hash, file_size, results_encrypted, risk_score, risk_level,
+                       created_at, expires_at, access_count
+                FROM analysis_results
+                WHERE entry_ref = ?
+            ''', (entry_ref,))
+
+            row = cursor.fetchone()
+            if not row:
+                return None, 'Entry not found'
+
+            (secret_key_hash, encrypted_filename, file_type, file_hash, file_size,
+             encrypted_results, risk_score, risk_level, created_at, expires_at, access_count) = row
+
+            # Check expiration
+            if expires_at:
+                exp_date = datetime.fromisoformat(expires_at)
+                if datetime.now() > exp_date:
+                    return None, 'Entry has expired'
+
+            # Validate secret key
+            provided_hash = self.encryption.hash_secret_key(secret_key)
+            if provided_hash != secret_key_hash:
+                return None, 'Invalid secret key'
+
+            # Decrypt results
+            try:
+                results = self.encryption.decrypt_results(encrypted_results, secret_key)
+                filename = self.encryption.decrypt_filename(encrypted_filename)
+            except Exception:
+                return None, 'Decryption failed - invalid secret key'
+
+            # Update access count
+            cursor.execute('''
+                UPDATE analysis_results
+                SET access_count = access_count + 1, last_accessed_at = CURRENT_TIMESTAMP
+                WHERE entry_ref = ?
+            ''', (entry_ref,))
+
+            # Log retrieval
+            cursor.execute('''
+                INSERT INTO access_log (entry_ref, action, client_ip)
+                VALUES (?, 'retrieved', ?)
+            ''', (entry_ref, client_ip))
+
+            conn.commit()
+
+            return {
+                'entryRef': entry_ref,
+                'originalFilename': filename,
+                'fileType': file_type,
+                'fileHash': file_hash,
+                'fileSize': file_size,
+                'riskScore': risk_score,
+                'riskLevel': risk_level,
+                'createdAt': created_at,
+                'expiresAt': expires_at,
+                'accessCount': access_count + 1,
+                'results': results
+            }, None
+
+        finally:
+            conn.close()
+
+    def delete(self, entry_ref, secret_key, client_ip=None):
+        """Delete stored results"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        try:
+            # First verify ownership
+            cursor.execute('''
+                SELECT secret_key_hash FROM analysis_results WHERE entry_ref = ?
+            ''', (entry_ref,))
+
+            row = cursor.fetchone()
+            if not row:
+                return False, 'Entry not found'
+
+            # Validate secret key
+            provided_hash = self.encryption.hash_secret_key(secret_key)
+            if provided_hash != row[0]:
+                return False, 'Invalid secret key'
+
+            # Delete
+            cursor.execute('DELETE FROM analysis_results WHERE entry_ref = ?', (entry_ref,))
+
+            # Log deletion
+            cursor.execute('''
+                INSERT INTO access_log (entry_ref, action, client_ip)
+                VALUES (?, 'deleted', ?)
+            ''', (entry_ref, client_ip))
+
+            conn.commit()
+            return True, None
+
+        finally:
+            conn.close()
+
+    def get_stats(self):
+        """Get storage statistics"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('SELECT COUNT(*) FROM analysis_results')
+            total_count = cursor.fetchone()[0]
+
+            cursor.execute('SELECT COUNT(*) FROM analysis_results WHERE expires_at < ?',
+                          (datetime.now().isoformat(),))
+            expired_count = cursor.fetchone()[0]
+
+            cursor.execute('''
+                SELECT file_type, COUNT(*) FROM analysis_results
+                GROUP BY file_type
+            ''')
+            by_type = dict(cursor.fetchall())
+
+            cursor.execute('''
+                SELECT risk_level, COUNT(*) FROM analysis_results
+                GROUP BY risk_level
+            ''')
+            by_risk = dict(cursor.fetchall())
+
+            return {
+                'totalEntries': total_count,
+                'expiredEntries': expired_count,
+                'byType': by_type,
+                'byRiskLevel': by_risk
+            }
+
+        finally:
+            conn.close()
+
+    def cleanup_expired(self, client_ip=None):
+        """Remove expired entries"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        try:
+            # Get expired entries
+            cursor.execute('''
+                SELECT entry_ref FROM analysis_results WHERE expires_at < ?
+            ''', (datetime.now().isoformat(),))
+
+            expired = cursor.fetchall()
+
+            # Delete and log
+            for (entry_ref,) in expired:
+                cursor.execute('DELETE FROM analysis_results WHERE entry_ref = ?', (entry_ref,))
+                cursor.execute('''
+                    INSERT INTO access_log (entry_ref, action, client_ip)
+                    VALUES (?, 'expired', ?)
+                ''', (entry_ref, client_ip))
+
+            conn.commit()
+            return len(expired)
+
+        finally:
+            conn.close()
+
+
+# Initialize storage globally
+_storage = None
+
+def get_storage():
+    global _storage
+    if _storage is None:
+        _storage = ResultStorage()
+    return _storage
+
+
+# ============================================================================
+# External Lookup Functions (Enrichment)
+# ============================================================================
+
+def get_cached(key):
+    """Get cached value if not expired"""
+    with _cache_lock:
+        if key in _lookup_cache:
+            value, timestamp = _lookup_cache[key]
+            if datetime.now().timestamp() - timestamp < CACHE_TTL:
+                return value
+            else:
+                del _lookup_cache[key]
+    return None
+
+
+def set_cached(key, value):
+    """Set cached value"""
+    with _cache_lock:
+        _lookup_cache[key] = (value, datetime.now().timestamp())
+
+
+def dns_lookup(domain):
+    """Resolve domain to IP addresses"""
+    cache_key = f'dns:{domain}'
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    result = {
+        'domain': domain,
+        'ips': [],
+        'error': None
+    }
+
+    try:
+        ips = socket.gethostbyname_ex(domain)[2]
+        result['ips'] = ips
+    except socket.gaierror as e:
+        result['error'] = str(e)
+    except Exception as e:
+        result['error'] = str(e)
+
+    set_cached(cache_key, result)
+    return result
+
+
+def whois_lookup(domain):
+    """Get WHOIS information for domain"""
+    cache_key = f'whois:{domain}'
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    result = {
+        'domain': domain,
+        'registrar': None,
+        'creation_date': None,
+        'expiration_date': None,
+        'registrant_country': None,
+        'domain_age_days': None,
+        'error': None
+    }
+
+    try:
+        import whois
+        w = whois.whois(domain)
+
+        result['registrar'] = w.registrar if hasattr(w, 'registrar') else None
+
+        # Handle creation date (can be list or single value)
+        creation = w.creation_date if hasattr(w, 'creation_date') else None
+        if isinstance(creation, list):
+            creation = creation[0] if creation else None
+        if creation:
+            result['creation_date'] = creation.isoformat() if hasattr(creation, 'isoformat') else str(creation)
+            try:
+                age = (datetime.now() - creation).days
+                result['domain_age_days'] = age
+            except Exception:
+                pass
+
+        # Handle expiration date
+        expiry = w.expiration_date if hasattr(w, 'expiration_date') else None
+        if isinstance(expiry, list):
+            expiry = expiry[0] if expiry else None
+        if expiry:
+            result['expiration_date'] = expiry.isoformat() if hasattr(expiry, 'isoformat') else str(expiry)
+
+        # Registrant country
+        if hasattr(w, 'country'):
+            result['registrant_country'] = w.country
+        elif hasattr(w, 'registrant_country'):
+            result['registrant_country'] = w.registrant_country
+
+    except Exception as e:
+        result['error'] = str(e)
+
+    set_cached(cache_key, result)
+    return result
+
+
+def ip_lookup(ip):
+    """Get geolocation and ISP info for IP"""
+    cache_key = f'ip:{ip}'
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    result = {
+        'ip': ip,
+        'country': None,
+        'city': None,
+        'isp': None,
+        'org': None,
+        'asn': None,
+        'is_proxy': None,
+        'is_hosting': None,
+        'error': None
+    }
+
+    try:
+        api_url = f'http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,city,isp,org,as,mobile,proxy,hosting,query'
+        req = urllib.request.Request(api_url, headers={'User-Agent': 'IPLookup/1.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+
+        if data.get('status') == 'success':
+            result['country'] = data.get('country')
+            result['country_code'] = data.get('countryCode')
+            result['city'] = data.get('city')
+            result['isp'] = data.get('isp')
+            result['org'] = data.get('org')
+            result['asn'] = data.get('as')
+            result['is_proxy'] = data.get('proxy')
+            result['is_hosting'] = data.get('hosting')
+        else:
+            result['error'] = data.get('message', 'Lookup failed')
+
+    except Exception as e:
+        result['error'] = str(e)
+
+    set_cached(cache_key, result)
+    return result
+
+
 def check_abuse_ipdb(ip):
     """Check IP against AbuseIPDB for threat intelligence"""
     if not ABUSEIPDB_API_KEY:
         return None
+
+    cache_key = f'abuse:{ip}'
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
 
     try:
         url = f'https://api.abuseipdb.com/api/v2/check?ipAddress={ip}&maxAgeInDays=90&verbose=true'
@@ -52,11 +712,1310 @@ def check_abuse_ipdb(ip):
         })
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
-            return data.get('data')
+            result = data.get('data')
+            set_cached(cache_key, result)
+            return result
     except Exception as e:
         print(f"AbuseIPDB error: {e}")
         return None
 
+
+def enrich_url(url):
+    """Enrich URL with DNS, IP lookup, and threat intel"""
+    result = {
+        'url': url,
+        'domain': None,
+        'dns': None,
+        'ip_info': [],
+        'threat_info': []
+    }
+
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc
+
+        # Remove port if present
+        if ':' in domain:
+            domain = domain.split(':')[0]
+
+        if not domain:
+            return result
+
+        result['domain'] = domain
+
+        # DNS lookup
+        dns_result = dns_lookup(domain)
+        result['dns'] = dns_result
+
+        # IP lookups for resolved IPs
+        if dns_result.get('ips'):
+            for ip in dns_result['ips'][:3]:  # Limit to 3 IPs
+                ip_info = ip_lookup(ip)
+                result['ip_info'].append(ip_info)
+
+                # Threat intel
+                threat = check_abuse_ipdb(ip)
+                if threat:
+                    result['threat_info'].append({
+                        'ip': ip,
+                        'abuse_score': threat.get('abuseConfidenceScore', 0),
+                        'total_reports': threat.get('totalReports', 0),
+                        'is_tor': threat.get('isTor', False)
+                    })
+
+    except Exception as e:
+        result['error'] = str(e)
+
+    return result
+
+
+def enrich_domain(domain):
+    """Enrich domain with WHOIS, DNS, and IP lookups"""
+    result = {
+        'domain': domain,
+        'whois': None,
+        'dns': None,
+        'ip_info': [],
+        'is_new_domain': False
+    }
+
+    # WHOIS lookup
+    whois_result = whois_lookup(domain)
+    result['whois'] = whois_result
+
+    # Flag new domains (less than 30 days old)
+    if whois_result.get('domain_age_days') is not None:
+        if whois_result['domain_age_days'] < 30:
+            result['is_new_domain'] = True
+
+    # DNS lookup
+    dns_result = dns_lookup(domain)
+    result['dns'] = dns_result
+
+    # IP lookups
+    if dns_result.get('ips'):
+        for ip in dns_result['ips'][:3]:
+            ip_info = ip_lookup(ip)
+            result['ip_info'].append(ip_info)
+
+    return result
+
+
+# ============================================================================
+# QR Code Detection Functions
+# ============================================================================
+
+def decode_qr_codes(image_data):
+    """Decode QR codes from image data"""
+    results = []
+
+    try:
+        from pyzbar import pyzbar
+        from PIL import Image
+
+        # Try to open the image
+        image = Image.open(io.BytesIO(image_data))
+
+        # Convert to RGB if necessary (pyzbar works better with RGB)
+        if image.mode not in ('RGB', 'L'):
+            image = image.convert('RGB')
+
+        # Decode QR codes
+        decoded_objects = pyzbar.decode(image)
+
+        for obj in decoded_objects:
+            if obj.type in ('QRCODE', 'AZTEC', 'DATAMATRIX'):
+                data = obj.data.decode('utf-8', errors='ignore')
+                qr_info = analyze_qr_data(data)
+                qr_info['raw_data'] = data[:500]  # Limit raw data length
+                qr_info['type'] = obj.type
+                qr_info['rect'] = {
+                    'left': obj.rect.left,
+                    'top': obj.rect.top,
+                    'width': obj.rect.width,
+                    'height': obj.rect.height
+                }
+                results.append(qr_info)
+
+    except ImportError:
+        pass  # pyzbar not installed
+    except Exception as e:
+        pass  # Failed to decode
+
+    return results
+
+
+def analyze_qr_data(data):
+    """Analyze QR code data and classify its content"""
+    result = {
+        'data_type': 'text',
+        'urls': [],
+        'enriched_urls': [],
+        'emails': [],
+        'phones': [],
+        'wifi': None,
+        'is_vcard': False,
+        'risk_indicators': []
+    }
+
+    # Check for URLs
+    urls = QR_URL_PATTERN.findall(data)
+    if urls:
+        result['data_type'] = 'url'
+        result['urls'] = urls[:10]  # Limit to 10 URLs
+
+        # Enrich URLs
+        for url in urls[:5]:  # Enrich first 5
+            enriched = enrich_url(url)
+            download_info = extract_download_info(url)
+            enriched['download'] = download_info
+            result['enriched_urls'].append(enriched)
+
+            # Check for suspicious URL characteristics
+            if download_info.get('is_high_risk'):
+                result['risk_indicators'].append({
+                    'type': 'high_risk_download',
+                    'severity': 'high',
+                    'description': f'QR code contains high-risk download: {download_info.get("target_filename")}'
+                })
+
+            # Check for URL shorteners (often used to hide malicious URLs)
+            shorteners = ['bit.ly', 'tinyurl.com', 'goo.gl', 't.co', 'ow.ly', 'is.gd', 'buff.ly',
+                         'adf.ly', 'j.mp', 'rb.gy', 'shorturl.at', 'cutt.ly']
+            parsed_url = urlparse(url)
+            if any(shortener in parsed_url.netloc.lower() for shortener in shorteners):
+                result['risk_indicators'].append({
+                    'type': 'url_shortener',
+                    'severity': 'medium',
+                    'description': f'QR code uses URL shortener: {parsed_url.netloc}'
+                })
+
+    # Check for email addresses
+    emails = QR_EMAIL_PATTERN.findall(data)
+    if emails:
+        result['data_type'] = 'mailto' if not urls else result['data_type']
+        result['emails'] = emails[:5]
+
+    # Check for phone numbers
+    phones = QR_PHONE_PATTERN.findall(data)
+    if phones:
+        result['data_type'] = 'tel' if not urls and not emails else result['data_type']
+        result['phones'] = [p.strip() for p in phones[:5]]
+
+    # Check for WiFi credentials
+    if QR_WIFI_PATTERN.search(data):
+        result['data_type'] = 'wifi'
+        result['wifi'] = parse_wifi_qr(data)
+        result['risk_indicators'].append({
+            'type': 'wifi_credentials',
+            'severity': 'medium',
+            'description': 'QR code contains WiFi network credentials'
+        })
+
+    # Check for vCard
+    if QR_VCARD_PATTERN.search(data):
+        result['data_type'] = 'vcard'
+        result['is_vcard'] = True
+
+    # Check for suspicious patterns in data
+    suspicious_patterns = [
+        (r'password', 'password exposure'),
+        (r'credential', 'credential exposure'),
+        (r'api[_-]?key', 'API key exposure'),
+        (r'secret', 'secret exposure'),
+        (r'token', 'token exposure'),
+    ]
+
+    data_lower = data.lower()
+    for pattern, desc in suspicious_patterns:
+        if re.search(pattern, data_lower):
+            result['risk_indicators'].append({
+                'type': 'sensitive_data',
+                'severity': 'high',
+                'description': f'QR code may contain {desc}'
+            })
+            break
+
+    return result
+
+
+def parse_wifi_qr(data):
+    """Parse WiFi QR code data (WIFI:T:WPA;S:network;P:password;;)"""
+    wifi_info = {
+        'ssid': None,
+        'security': None,
+        'hidden': False
+    }
+
+    try:
+        # Extract SSID
+        ssid_match = re.search(r'S:([^;]*)', data)
+        if ssid_match:
+            wifi_info['ssid'] = ssid_match.group(1)
+
+        # Extract security type
+        type_match = re.search(r'T:([^;]*)', data)
+        if type_match:
+            wifi_info['security'] = type_match.group(1)
+
+        # Check if hidden
+        if 'H:true' in data.lower():
+            wifi_info['hidden'] = True
+
+    except Exception:
+        pass
+
+    return wifi_info
+
+
+def extract_images_from_email(msg):
+    """Extract images from email message for QR code scanning"""
+    images = []
+
+    try:
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+
+                # Check for image attachments
+                if content_type.startswith('image/'):
+                    try:
+                        payload = part.get_payload(decode=True)
+                        if payload and len(payload) < 10 * 1024 * 1024:  # Max 10MB per image
+                            images.append({
+                                'data': payload,
+                                'filename': part.get_filename() or 'inline_image',
+                                'content_type': content_type,
+                                'source': 'attachment'
+                            })
+                    except Exception:
+                        pass
+
+                # Check for inline images in HTML (embedded base64)
+                elif content_type == 'text/html':
+                    try:
+                        html_content = part.get_content()
+                        if isinstance(html_content, bytes):
+                            html_content = html_content.decode('utf-8', errors='ignore')
+
+                        # Find base64 encoded images
+                        img_pattern = re.compile(r'data:image/([^;]+);base64,([A-Za-z0-9+/=]+)', re.IGNORECASE)
+                        for match in img_pattern.finditer(html_content):
+                            try:
+                                img_type = match.group(1)
+                                img_data = base64.b64decode(match.group(2))
+                                if len(img_data) < 10 * 1024 * 1024:
+                                    images.append({
+                                        'data': img_data,
+                                        'filename': f'inline_base64.{img_type}',
+                                        'content_type': f'image/{img_type}',
+                                        'source': 'inline_base64'
+                                    })
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+    except Exception:
+        pass
+
+    return images[:20]  # Limit to 20 images
+
+
+def extract_images_from_pdf(file_data):
+    """Extract images from PDF for QR code scanning"""
+    images = []
+
+    try:
+        from pypdf import PdfReader
+        from PIL import Image
+
+        reader = PdfReader(io.BytesIO(file_data))
+
+        for page_num, page in enumerate(reader.pages[:10]):  # Limit to first 10 pages
+            try:
+                # Use pypdf's built-in image extraction
+                if hasattr(page, 'images'):
+                    for img_idx, image in enumerate(page.images):
+                        try:
+                            img_data = image.data
+                            if img_data and len(img_data) < 10 * 1024 * 1024:
+                                images.append({
+                                    'data': img_data,
+                                    'filename': f'page{page_num + 1}_img{img_idx + 1}.{image.name.split(".")[-1] if "." in image.name else "png"}',
+                                    'content_type': f'image/{image.name.split(".")[-1] if "." in image.name else "png"}',
+                                    'source': f'page_{page_num + 1}'
+                                })
+                        except Exception:
+                            pass
+
+                # Fallback: Manual XObject extraction
+                if '/XObject' in page.get('/Resources', {}):
+                    xobject = page['/Resources']['/XObject'].get_object()
+
+                    for obj_name in xobject:
+                        obj = xobject[obj_name]
+                        if hasattr(obj, 'get_object'):
+                            obj = obj.get_object()
+
+                        if obj.get('/Subtype') == '/Image':
+                            try:
+                                width = int(obj.get('/Width', 0))
+                                height = int(obj.get('/Height', 0))
+
+                                if width > 0 and height > 0:
+                                    # Try to get decoded data using pypdf's get_data()
+                                    try:
+                                        raw_data = obj.get_data()
+                                        if raw_data:
+                                            color_space = str(obj.get('/ColorSpace', '/DeviceRGB'))
+                                            bits = int(obj.get('/BitsPerComponent', 8))
+
+                                            if '/DeviceGray' in color_space:
+                                                mode = 'L'
+                                            elif '/DeviceCMYK' in color_space:
+                                                mode = 'CMYK'
+                                            else:
+                                                mode = 'RGB'
+
+                                            try:
+                                                img = Image.frombytes(mode, (width, height), raw_data)
+                                                if mode == 'CMYK':
+                                                    img = img.convert('RGB')
+                                                img_buffer = io.BytesIO()
+                                                img.save(img_buffer, format='PNG')
+                                                img_data = img_buffer.getvalue()
+                                                if len(img_data) < 10 * 1024 * 1024:
+                                                    images.append({
+                                                        'data': img_data,
+                                                        'filename': f'page{page_num + 1}_{obj_name}.png',
+                                                        'content_type': 'image/png',
+                                                        'source': f'page_{page_num + 1}'
+                                                    })
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    return images[:30]  # Limit to 30 images
+
+
+def scan_for_qr_codes(images):
+    """Scan a list of images for QR codes"""
+    all_qr_codes = []
+    seen_data = set()  # Deduplicate based on raw QR data
+
+    for img_info in images:
+        try:
+            qr_codes = decode_qr_codes(img_info['data'])
+            for qr in qr_codes:
+                # Deduplicate based on raw data content
+                raw_data = qr.get('raw_data', '')
+                if raw_data in seen_data:
+                    continue
+                seen_data.add(raw_data)
+
+                qr['source_image'] = img_info.get('filename', 'unknown')
+                qr['source_location'] = img_info.get('source', 'unknown')
+                all_qr_codes.append(qr)
+        except Exception:
+            pass
+
+    return all_qr_codes
+
+
+def extract_download_info(url):
+    """Extract download target information from URL"""
+    result = {
+        'url': url,
+        'is_download': False,
+        'target_filename': None,
+        'extension': None,
+        'is_high_risk': False
+    }
+
+    try:
+        parsed = urlparse(url)
+        path = parsed.path
+
+        # Extract filename from path
+        if '/' in path:
+            potential_filename = path.split('/')[-1]
+            if '.' in potential_filename:
+                result['target_filename'] = potential_filename
+                ext = '.' + potential_filename.split('.')[-1].lower()
+                result['extension'] = ext
+                result['is_download'] = True
+                result['is_high_risk'] = ext in HIGH_RISK_EXTENSIONS
+
+    except Exception:
+        pass
+
+    return result
+
+
+# ============================================================================
+# Analysis Functions
+# ============================================================================
+
+def analyze_email(file_data):
+    """Analyze an email file (.eml) for security indicators"""
+    try:
+        msg = BytesParser(policy=policy.default).parsebytes(file_data)
+
+        # Extract basic headers
+        headers = {
+            'from': msg.get('From', ''),
+            'to': msg.get('To', ''),
+            'subject': msg.get('Subject', ''),
+            'date': msg.get('Date', ''),
+            'message_id': msg.get('Message-ID', ''),
+            'reply_to': msg.get('Reply-To', ''),
+            'return_path': msg.get('Return-Path', ''),
+        }
+
+        # Extract sender domain and enrich
+        sender_domain = None
+        sender_domain_info = None
+        from_addr = headers.get('from', '')
+        domain_match = re.search(r'@([a-zA-Z0-9.-]+)', from_addr)
+        if domain_match:
+            sender_domain = domain_match.group(1).lower()
+            sender_domain_info = enrich_domain(sender_domain)
+
+        # Extract routing path (Received headers) with IP enrichment
+        received_headers = msg.get_all('Received', [])
+        routing_path = []
+        routing_ips = []
+
+        ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+
+        for recv in received_headers[:10]:  # Limit to 10
+            recv_str = str(recv)[:200]
+            routing_path.append(recv_str)
+
+            # Extract IPs from routing
+            ips = ip_pattern.findall(recv_str)
+            for ip in ips:
+                if not ip.startswith(('10.', '192.168.', '127.')):
+                    ip_info = ip_lookup(ip)
+                    threat = check_abuse_ipdb(ip)
+                    routing_ips.append({
+                        'ip': ip,
+                        'info': ip_info,
+                        'threat': threat
+                    })
+
+        # Parse authentication results
+        auth_results = parse_authentication_results(msg)
+
+        # Extract URLs from body with enrichment
+        urls = extract_urls_from_email(msg)
+        enriched_urls = []
+        for url in urls[:20]:  # Limit enrichment to 20 URLs
+            enriched = enrich_url(url)
+            download_info = extract_download_info(url)
+            enriched['download'] = download_info
+            enriched_urls.append(enriched)
+
+        # Extract attachments
+        attachments = extract_attachments(msg)
+
+        # Extract images and scan for QR codes
+        images = extract_images_from_email(msg)
+        qr_codes = scan_for_qr_codes(images)
+
+        # Collect QR code URLs for phishing detection
+        qr_urls = []
+        qr_risk_indicators = []
+        for qr in qr_codes:
+            qr_urls.extend(qr.get('urls', []))
+            qr_risk_indicators.extend(qr.get('risk_indicators', []))
+
+        # Perform phishing detection (include QR code URLs)
+        all_urls_for_detection = urls + qr_urls
+        phishing_indicators = detect_phishing(msg, headers, all_urls_for_detection, attachments, auth_results)
+
+        # Add QR-specific risk indicators
+        for indicator in qr_risk_indicators:
+            phishing_indicators.append(indicator)
+
+        # Calculate risk score (include QR codes)
+        risk_score = calculate_email_risk_score(phishing_indicators, auth_results, attachments, sender_domain_info, qr_codes)
+
+        return {
+            'success': True,
+            'type': 'email',
+            'headers': headers,
+            'senderDomain': sender_domain,
+            'senderDomainInfo': sender_domain_info,
+            'routingPath': routing_path,
+            'routingIps': routing_ips[:5],  # Limit to 5
+            'authentication': auth_results,
+            'urls': urls[:50],  # Raw URLs
+            'enrichedUrls': enriched_urls,
+            'urlCount': len(urls),
+            'attachments': attachments,
+            'attachmentCount': len(attachments),
+            'qrCodes': qr_codes,
+            'qrCodeCount': len(qr_codes),
+            'phishingIndicators': phishing_indicators,
+            'riskScore': risk_score,
+            'riskLevel': get_risk_level(risk_score)
+        }
+    except Exception as e:
+        return {'success': False, 'error': f'Failed to parse email: {str(e)}'}
+
+
+def parse_authentication_results(msg):
+    """Parse SPF, DKIM, and DMARC results from headers"""
+    auth_results = {
+        'spf': {'status': 'unknown', 'details': ''},
+        'dkim': {'status': 'unknown', 'details': ''},
+        'dmarc': {'status': 'unknown', 'details': ''}
+    }
+
+    # Check Authentication-Results header
+    auth_header = msg.get('Authentication-Results', '')
+    if auth_header:
+        auth_str = str(auth_header).lower()
+
+        # SPF
+        spf_match = re.search(r'spf=(pass|fail|softfail|neutral|none|temperror|permerror)', auth_str)
+        if spf_match:
+            auth_results['spf']['status'] = spf_match.group(1)
+
+        # DKIM
+        dkim_match = re.search(r'dkim=(pass|fail|none|neutral|temperror|permerror)', auth_str)
+        if dkim_match:
+            auth_results['dkim']['status'] = dkim_match.group(1)
+
+        # DMARC
+        dmarc_match = re.search(r'dmarc=(pass|fail|none|bestguesspass)', auth_str)
+        if dmarc_match:
+            auth_results['dmarc']['status'] = dmarc_match.group(1)
+
+    # Also check individual headers
+    spf_header = msg.get('Received-SPF', '')
+    if spf_header:
+        spf_str = str(spf_header).lower()
+        if 'pass' in spf_str:
+            auth_results['spf']['status'] = 'pass'
+        elif 'fail' in spf_str:
+            auth_results['spf']['status'] = 'fail'
+        elif 'softfail' in spf_str:
+            auth_results['spf']['status'] = 'softfail'
+        auth_results['spf']['details'] = str(spf_header)[:200]
+
+    dkim_sig = msg.get('DKIM-Signature', '')
+    if dkim_sig:
+        auth_results['dkim']['details'] = 'DKIM signature present'
+
+    return auth_results
+
+
+def extract_urls_from_email(msg):
+    """Extract URLs from email body (text and HTML)"""
+    urls = []
+    url_pattern = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
+
+    # Get email body parts
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_type = part.get_content_type()
+            if content_type in ('text/plain', 'text/html'):
+                try:
+                    body = part.get_content()
+                    if isinstance(body, bytes):
+                        body = body.decode('utf-8', errors='ignore')
+                    found_urls = url_pattern.findall(body)
+                    urls.extend(found_urls)
+                except Exception:
+                    pass
+    else:
+        try:
+            body = msg.get_content()
+            if isinstance(body, bytes):
+                body = body.decode('utf-8', errors='ignore')
+            urls = url_pattern.findall(body)
+        except Exception:
+            pass
+
+    # Deduplicate and clean
+    seen = set()
+    unique_urls = []
+    for url in urls:
+        # Clean up URL
+        url = url.rstrip('.,;:)>')
+        if url not in seen:
+            seen.add(url)
+            unique_urls.append(url)
+
+    return unique_urls
+
+
+def extract_attachments(msg):
+    """Extract attachment metadata from email"""
+    attachments = []
+
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_disposition = str(part.get('Content-Disposition', ''))
+            if 'attachment' in content_disposition or 'inline' in content_disposition:
+                filename = part.get_filename()
+                if filename:
+                    content_type = part.get_content_type()
+                    try:
+                        size = len(part.get_payload(decode=True) or b'')
+                    except Exception:
+                        size = 0
+
+                    # Check if suspicious
+                    ext = os.path.splitext(filename)[1].lower()
+                    is_suspicious = ext in SUSPICIOUS_EXTENSIONS
+
+                    attachments.append({
+                        'filename': filename,
+                        'contentType': content_type,
+                        'size': size,
+                        'extension': ext,
+                        'isSuspicious': is_suspicious
+                    })
+
+    return attachments
+
+
+def detect_phishing(msg, headers, urls, attachments, auth_results):
+    """Detect phishing indicators in email"""
+    indicators = []
+
+    # Check for failed authentication
+    if auth_results['spf']['status'] in ('fail', 'softfail'):
+        indicators.append({
+            'type': 'auth_failure',
+            'severity': 'high',
+            'description': f"SPF check {auth_results['spf']['status']}"
+        })
+
+    if auth_results['dkim']['status'] == 'fail':
+        indicators.append({
+            'type': 'auth_failure',
+            'severity': 'high',
+            'description': 'DKIM signature verification failed'
+        })
+
+    if auth_results['dmarc']['status'] == 'fail':
+        indicators.append({
+            'type': 'auth_failure',
+            'severity': 'high',
+            'description': 'DMARC policy check failed'
+        })
+
+    # Check for URL/display text mismatch in HTML
+    body_html = get_html_body(msg)
+    if body_html:
+        link_pattern = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>([^<]+)</a>', re.IGNORECASE)
+        for match in link_pattern.finditer(body_html):
+            href = match.group(1)
+            display_text = match.group(2).strip()
+            # Check if display text looks like a URL but differs from href
+            if re.match(r'https?://', display_text, re.IGNORECASE):
+                if href.split('/')[2] != display_text.split('/')[2]:
+                    indicators.append({
+                        'type': 'url_mismatch',
+                        'severity': 'high',
+                        'description': f'Link display text ({display_text[:50]}) differs from actual URL domain'
+                    })
+                    break  # One is enough
+
+    # Check for lookalike domains in URLs
+    for url in urls[:20]:  # Check first 20 URLs
+        for pattern, brand in LOOKALIKE_PATTERNS:
+            if re.search(pattern, url, re.IGNORECASE) and brand not in url.lower():
+                indicators.append({
+                    'type': 'lookalike_domain',
+                    'severity': 'high',
+                    'description': f'Possible {brand} lookalike domain detected'
+                })
+                break
+
+    # Check for urgency keywords in subject
+    subject = headers.get('subject', '').lower()
+    for keyword in URGENCY_KEYWORDS:
+        if keyword in subject:
+            indicators.append({
+                'type': 'urgency',
+                'severity': 'medium',
+                'description': f'Urgency keyword detected: "{keyword}"'
+            })
+            break
+
+    # Check for suspicious attachments
+    for att in attachments:
+        if att['isSuspicious']:
+            indicators.append({
+                'type': 'suspicious_attachment',
+                'severity': 'high',
+                'description': f'Suspicious attachment type: {att["filename"]}'
+            })
+
+    # Check for Reply-To mismatch
+    from_addr = headers.get('from', '')
+    reply_to = headers.get('reply_to', '')
+    if reply_to and from_addr:
+        from_domain = extract_domain_from_email(from_addr)
+        reply_domain = extract_domain_from_email(reply_to)
+        if from_domain and reply_domain and from_domain != reply_domain:
+            indicators.append({
+                'type': 'reply_mismatch',
+                'severity': 'medium',
+                'description': f'Reply-To domain ({reply_domain}) differs from From domain ({from_domain})'
+            })
+
+    return indicators
+
+
+def get_html_body(msg):
+    """Extract HTML body from email"""
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == 'text/html':
+                try:
+                    body = part.get_content()
+                    if isinstance(body, bytes):
+                        body = body.decode('utf-8', errors='ignore')
+                    return body
+                except Exception:
+                    pass
+    elif msg.get_content_type() == 'text/html':
+        try:
+            body = msg.get_content()
+            if isinstance(body, bytes):
+                body = body.decode('utf-8', errors='ignore')
+            return body
+        except Exception:
+            pass
+    return ''
+
+
+def extract_domain_from_email(email_addr):
+    """Extract domain from email address"""
+    match = re.search(r'@([a-zA-Z0-9.-]+)', email_addr)
+    return match.group(1).lower() if match else None
+
+
+def calculate_email_risk_score(indicators, auth_results, attachments, sender_domain_info=None, qr_codes=None):
+    """Calculate risk score for email (0-100)"""
+    score = 0
+
+    # Base score for indicators
+    for ind in indicators:
+        if ind['severity'] == 'high':
+            score += 20
+        elif ind['severity'] == 'medium':
+            score += 10
+        else:
+            score += 5
+
+    # Bonus for failed authentication
+    failed_auth = 0
+    for key in ['spf', 'dkim', 'dmarc']:
+        if auth_results[key]['status'] in ('fail', 'softfail'):
+            failed_auth += 1
+    score += failed_auth * 5
+
+    # Bonus for suspicious attachments
+    for att in attachments:
+        if att['isSuspicious']:
+            score += 15
+
+    # Bonus for new domain (less than 30 days)
+    if sender_domain_info and sender_domain_info.get('is_new_domain'):
+        score += 15
+
+    # QR code risk scoring
+    if qr_codes:
+        for qr in qr_codes:
+            # QR codes with URLs are suspicious in emails
+            if qr.get('urls'):
+                score += 10
+            # QR codes with URL shorteners are more suspicious
+            for indicator in qr.get('risk_indicators', []):
+                if indicator['severity'] == 'high':
+                    score += 15
+                elif indicator['severity'] == 'medium':
+                    score += 8
+
+    return min(score, 100)
+
+
+def analyze_pdf(file_data):
+    """Analyze a PDF file for security indicators"""
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(file_data))
+
+        # Extract metadata
+        metadata = {}
+        if reader.metadata:
+            metadata = {
+                'author': reader.metadata.get('/Author', ''),
+                'creator': reader.metadata.get('/Creator', ''),
+                'producer': reader.metadata.get('/Producer', ''),
+                'subject': reader.metadata.get('/Subject', ''),
+                'title': reader.metadata.get('/Title', ''),
+                'creationDate': str(reader.metadata.get('/CreationDate', '')),
+                'modDate': str(reader.metadata.get('/ModDate', '')),
+            }
+
+        page_count = len(reader.pages)
+
+        # Scan for suspicious content
+        javascript_found = []
+        embedded_files = []
+        urls = []
+        forms = []
+        external_refs = []
+        http_requests = []
+        download_urls = []
+        process_triggers = []
+
+        # Check document catalog
+        if reader.trailer and '/Root' in reader.trailer:
+            root = reader.trailer['/Root'].get_object()
+
+            # Check for JavaScript
+            if '/Names' in root:
+                names = root['/Names']
+                if isinstance(names, dict) or hasattr(names, 'get_object'):
+                    names_obj = names.get_object() if hasattr(names, 'get_object') else names
+                    if '/JavaScript' in names_obj:
+                        javascript_found.append('Document-level JavaScript detected')
+
+            # Check for OpenAction (auto-execute)
+            if '/OpenAction' in root:
+                javascript_found.append('OpenAction detected (auto-execute on open)')
+
+            # Check for AcroForm (interactive forms)
+            if '/AcroForm' in root:
+                forms.append('Interactive form fields detected')
+
+        # Scan pages for suspicious content
+        url_pattern = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
+        launch_pattern = re.compile(r'/Launch[^/]*(/F|/Win|/Unix|/Mac)', re.IGNORECASE)
+        shell_pattern = re.compile(r'(cmd\.exe|powershell|bash|sh\s+-c)', re.IGNORECASE)
+
+        for page_num, page in enumerate(reader.pages[:20]):  # Limit to first 20 pages
+            # Check annotations for links and JavaScript
+            if '/Annots' in page:
+                try:
+                    annots = page['/Annots']
+                    if annots:
+                        for annot in annots:
+                            try:
+                                annot_obj = annot.get_object() if hasattr(annot, 'get_object') else annot
+
+                                # Check for JavaScript actions
+                                if '/A' in annot_obj:
+                                    action = annot_obj['/A']
+                                    action_obj = action.get_object() if hasattr(action, 'get_object') else action
+                                    if '/S' in action_obj:
+                                        action_type = str(action_obj['/S'])
+                                        if action_type == '/JavaScript':
+                                            javascript_found.append(f'JavaScript action on page {page_num + 1}')
+                                            # Check JS content for shell commands
+                                            if '/JS' in action_obj:
+                                                js_content = str(action_obj['/JS'])
+                                                if shell_pattern.search(js_content):
+                                                    process_triggers.append({
+                                                        'type': 'javascript_shell',
+                                                        'location': f'Page {page_num + 1}',
+                                                        'pattern': 'Shell command in JavaScript'
+                                                    })
+                                        elif action_type == '/URI':
+                                            if '/URI' in action_obj:
+                                                uri = str(action_obj['/URI'])
+                                                urls.append(uri)
+                                                # Check for downloads
+                                                download = extract_download_info(uri)
+                                                if download['is_download']:
+                                                    download_urls.append(download)
+                                        elif action_type == '/Launch':
+                                            external_refs.append(f'Launch action on page {page_num + 1}')
+                                            process_triggers.append({
+                                                'type': 'launch_action',
+                                                'location': f'Page {page_num + 1}',
+                                                'pattern': 'PDF Launch action'
+                                            })
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+            # Extract text and look for URLs
+            try:
+                text = page.extract_text() or ''
+                found_urls = url_pattern.findall(text)
+                for url in found_urls:
+                    urls.append(url)
+                    download = extract_download_info(url)
+                    if download['is_download']:
+                        download_urls.append(download)
+            except Exception:
+                pass
+
+        # Check for embedded files
+        if reader.trailer and '/Root' in reader.trailer:
+            root = reader.trailer['/Root'].get_object()
+            if '/Names' in root:
+                names = root['/Names']
+                names_obj = names.get_object() if hasattr(names, 'get_object') else names
+                if '/EmbeddedFiles' in names_obj:
+                    embedded_files.append('Embedded files detected')
+
+        # Extract images and scan for QR codes
+        images = extract_images_from_pdf(file_data)
+        qr_codes = scan_for_qr_codes(images)
+
+        # Collect QR code URLs
+        qr_urls = []
+        qr_risk_indicators = []
+        for qr in qr_codes:
+            qr_urls.extend(qr.get('urls', []))
+            qr_risk_indicators.extend(qr.get('risk_indicators', []))
+
+        # Add QR URLs to main URL list
+        urls.extend(qr_urls)
+
+        # Deduplicate URLs and enrich
+        urls = list(set(urls))[:50]
+        enriched_urls = []
+        for url in urls[:20]:
+            enriched = enrich_url(url)
+            enriched_urls.append(enriched)
+
+        # Detect HTTP request patterns in metadata
+        for key, value in metadata.items():
+            if value and url_pattern.search(str(value)):
+                http_requests.append({
+                    'source': f'Metadata: {key}',
+                    'url': url_pattern.search(str(value)).group()
+                })
+
+        # Calculate risk score (include QR codes)
+        risk_score = calculate_pdf_risk_score(javascript_found, embedded_files, external_refs, forms, download_urls, process_triggers, qr_codes)
+
+        return {
+            'success': True,
+            'type': 'pdf',
+            'metadata': metadata,
+            'pageCount': page_count,
+            'javascript': javascript_found,
+            'hasJavaScript': len(javascript_found) > 0,
+            'embeddedFiles': embedded_files,
+            'hasEmbeddedFiles': len(embedded_files) > 0,
+            'urls': urls,
+            'enrichedUrls': enriched_urls,
+            'urlCount': len(urls),
+            'forms': forms,
+            'hasForms': len(forms) > 0,
+            'externalReferences': external_refs,
+            'hasExternalRefs': len(external_refs) > 0,
+            'httpRequests': http_requests,
+            'downloadUrls': download_urls,
+            'processTriggers': process_triggers,
+            'qrCodes': qr_codes,
+            'qrCodeCount': len(qr_codes),
+            'riskScore': risk_score,
+            'riskLevel': get_risk_level(risk_score)
+        }
+    except ImportError:
+        return {'success': False, 'error': 'pypdf library not installed. Run: pip install pypdf'}
+    except Exception as e:
+        return {'success': False, 'error': f'Failed to parse PDF: {str(e)}'}
+
+
+def calculate_pdf_risk_score(javascript, embedded_files, external_refs, forms, download_urls=None, process_triggers=None, qr_codes=None):
+    """Calculate risk score for PDF (0-100)"""
+    score = 0
+
+    # JavaScript is high risk
+    score += len(javascript) * 25
+
+    # Embedded files are suspicious
+    score += len(embedded_files) * 20
+
+    # External references (launch actions)
+    score += len(external_refs) * 30
+
+    # Forms are low risk
+    score += len(forms) * 5
+
+    # Download URLs with high-risk extensions
+    if download_urls:
+        for dl in download_urls:
+            if dl.get('is_high_risk'):
+                score += 20
+            else:
+                score += 5
+
+    # Process triggers
+    if process_triggers:
+        score += len(process_triggers) * 25
+
+    # QR codes risk assessment
+    if qr_codes:
+        for qr in qr_codes:
+            qr_risk = qr.get('risk_level', 'low')
+            if qr_risk == 'critical':
+                score += 30
+            elif qr_risk == 'high':
+                score += 20
+            elif qr_risk == 'medium':
+                score += 10
+            else:
+                score += 3
+
+    return min(score, 100)
+
+
+def analyze_office(file_data, filename):
+    """Analyze an Office document for macros and suspicious content"""
+    try:
+        from oletools import olevba
+        from oletools.olevba import VBA_Parser
+
+        results = {
+            'success': True,
+            'type': 'office',
+            'filename': filename,
+            'macros': [],
+            'hasMacros': False,
+            'autoExecution': [],
+            'suspiciousPatterns': [],
+            'embeddedObjects': [],
+            'externalReferences': [],
+            'urls': [],
+            'enrichedUrls': [],
+            'httpRequests': [],
+            'downloadTargets': [],
+            'processTriggers': [],
+            'riskScore': 0,
+            'riskLevel': 'Low'
+        }
+
+        # URL and dangerous patterns
+        url_pattern = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
+        http_patterns = [
+            (r'WinHttp', 'WinHTTP request'),
+            (r'XMLHTTP', 'XMLHTTP request'),
+            (r'ServerXMLHTTP', 'ServerXMLHTTP request'),
+            (r'URLDownloadToFile', 'URLDownloadToFile'),
+            (r'Inet\.OpenURL', 'Internet Transfer Control'),
+            (r'WebClient', 'WebClient request'),
+        ]
+        process_patterns = [
+            (r'Shell\s*\(', 'Shell() execution'),
+            (r'WScript\.Shell', 'WScript.Shell'),
+            (r'CreateObject\s*\(\s*["\']?Shell', 'Shell.Application'),
+            (r'cmd\.exe', 'cmd.exe'),
+            (r'powershell', 'PowerShell'),
+            (r'cscript', 'cscript.exe'),
+            (r'wscript', 'wscript.exe'),
+            (r'mshta', 'mshta.exe'),
+            (r'regsvr32', 'regsvr32.exe'),
+            (r'rundll32', 'rundll32.exe'),
+            (r'certutil', 'certutil.exe'),
+            (r'bitsadmin', 'bitsadmin.exe'),
+        ]
+        download_patterns = [
+            (r'SaveAs|SaveToFile|\.Write', 'File save operation'),
+            (r'ADODB\.Stream', 'ADODB Stream'),
+            (r'Scripting\.FileSystemObject', 'FileSystemObject'),
+        ]
+
+        try:
+            vba_parser = VBA_Parser(filename, data=file_data)
+
+            if vba_parser.detect_vba_macros():
+                results['hasMacros'] = True
+                all_code = ""
+
+                # Extract macro information
+                for (filename_vba, stream_path, vba_filename, vba_code) in vba_parser.extract_macros():
+                    macro_info = {
+                        'filename': vba_filename,
+                        'streamPath': stream_path,
+                        'codePreview': vba_code[:2000] if vba_code else '',  # First 2000 chars
+                        'codeLength': len(vba_code) if vba_code else 0
+                    }
+                    results['macros'].append(macro_info)
+
+                    if vba_code:
+                        all_code += vba_code + "\n"
+
+                        # Check for auto-execution triggers
+                        auto_triggers = ['autoopen', 'autoclose', 'autonew', 'autoexec',
+                                       'document_open', 'document_close', 'workbook_open',
+                                       'workbook_close', 'auto_open', 'auto_close']
+                        code_lower = vba_code.lower()
+                        for trigger in auto_triggers:
+                            if trigger in code_lower:
+                                results['autoExecution'].append({
+                                    'trigger': trigger,
+                                    'location': vba_filename
+                                })
+
+                        # Extract URLs
+                        found_urls = url_pattern.findall(vba_code)
+                        results['urls'].extend(found_urls)
+
+                        # Detect HTTP requests
+                        for pattern, desc in http_patterns:
+                            if re.search(pattern, vba_code, re.IGNORECASE):
+                                results['httpRequests'].append({
+                                    'pattern': desc,
+                                    'location': vba_filename
+                                })
+
+                        # Detect process execution
+                        for pattern, desc in process_patterns:
+                            matches = re.findall(pattern, vba_code, re.IGNORECASE)
+                            for match in matches:
+                                results['processTriggers'].append({
+                                    'type': desc,
+                                    'location': vba_filename,
+                                    'match': match[:50] if len(match) > 50 else match
+                                })
+
+                        # Detect download/save operations
+                        for pattern, desc in download_patterns:
+                            if re.search(pattern, vba_code, re.IGNORECASE):
+                                results['downloadTargets'].append({
+                                    'pattern': desc,
+                                    'location': vba_filename
+                                })
+
+                # Analyze suspicious patterns
+                analysis = vba_parser.analyze_macros()
+                for kw_type, keyword, description in analysis:
+                    if kw_type in ('AutoExec', 'Suspicious', 'IOC', 'Hex Strings'):
+                        results['suspiciousPatterns'].append({
+                            'type': kw_type,
+                            'keyword': keyword,
+                            'description': description
+                        })
+
+            vba_parser.close()
+
+        except Exception as e:
+            # VBA parsing failed, might be a newer format
+            results['parseError'] = str(e)
+
+        # Deduplicate and enrich URLs
+        results['urls'] = list(set(results['urls']))[:50]
+        for url in results['urls'][:20]:
+            enriched = enrich_url(url)
+            download_info = extract_download_info(url)
+            enriched['download'] = download_info
+            results['enrichedUrls'].append(enriched)
+
+        # Try OLE analysis for embedded objects
+        try:
+            from oletools import oleobj
+            for ole in oleobj.find_ole(filename, file_data):
+                if ole:
+                    results['embeddedObjects'].append({
+                        'type': 'OLE Object',
+                        'description': 'Embedded OLE object detected'
+                    })
+        except Exception:
+            pass
+
+        # Deduplicate process triggers
+        seen_triggers = set()
+        unique_triggers = []
+        for trigger in results['processTriggers']:
+            key = (trigger['type'], trigger['location'])
+            if key not in seen_triggers:
+                seen_triggers.add(key)
+                unique_triggers.append(trigger)
+        results['processTriggers'] = unique_triggers
+
+        # Calculate risk score
+        results['riskScore'] = calculate_office_risk_score(results)
+        results['riskLevel'] = get_risk_level(results['riskScore'])
+
+        return results
+
+    except ImportError:
+        return {'success': False, 'error': 'oletools library not installed. Run: pip install oletools'}
+    except Exception as e:
+        return {'success': False, 'error': f'Failed to parse Office document: {str(e)}'}
+
+
+def calculate_office_risk_score(results):
+    """Calculate risk score for Office document (0-100)"""
+    score = 0
+
+    # Has macros is already suspicious
+    if results['hasMacros']:
+        score += 20
+
+    # Auto-execution is high risk
+    score += len(results['autoExecution']) * 25
+
+    # Suspicious patterns
+    for pattern in results['suspiciousPatterns']:
+        if pattern['type'] == 'AutoExec':
+            score += 20
+        elif pattern['type'] == 'Suspicious':
+            score += 15
+        elif pattern['type'] == 'IOC':
+            score += 25
+        else:
+            score += 10
+
+    # Embedded objects
+    score += len(results['embeddedObjects']) * 15
+
+    # Process triggers
+    score += len(results['processTriggers']) * 15
+
+    # HTTP requests
+    score += len(results['httpRequests']) * 10
+
+    # Download targets
+    score += len(results['downloadTargets']) * 10
+
+    return min(score, 100)
+
+
+def get_risk_level(score):
+    """Convert numeric risk score to level string"""
+    if score >= 75:
+        return 'Critical'
+    elif score >= 50:
+        return 'High'
+    elif score >= 25:
+        return 'Medium'
+    else:
+        return 'Low'
+
+
+# ============================================================================
+# HTTP Handler
+# ============================================================================
 
 class IPLookupHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -67,8 +2026,289 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             self.handle_my_ip()
         elif self.path.startswith('/api/lookup'):
             self.handle_lookup()
+        elif self.path == '/api/status':
+            self.handle_status()
         else:
             super().do_GET()
+
+    def do_POST(self):
+        """Handle POST requests for file analysis and result retrieval"""
+        if self.path == '/api/analyze/email':
+            self.handle_file_analysis('email')
+        elif self.path == '/api/analyze/pdf':
+            self.handle_file_analysis('pdf')
+        elif self.path == '/api/analyze/office':
+            self.handle_file_analysis('office')
+        elif self.path.startswith('/api/results/'):
+            self.handle_results_get()
+        else:
+            self.send_json({'error': 'Not found'}, 404)
+
+    def do_DELETE(self):
+        """Handle DELETE requests for result deletion"""
+        if self.path.startswith('/api/results/'):
+            self.handle_results_delete()
+        else:
+            self.send_json({'error': 'Not found'}, 404)
+
+    def handle_status(self):
+        """Return service health and storage stats"""
+        storage = get_storage()
+        stats = storage.get_stats()
+
+        # Cleanup expired entries
+        cleaned = storage.cleanup_expired(self.get_client_ip())
+
+        # Check QR code detection availability
+        qr_available = False
+        try:
+            from pyzbar import pyzbar
+            qr_available = True
+        except (ImportError, Exception):
+            qr_available = False
+
+        self.send_json({
+            'status': 'healthy',
+            'storage': stats,
+            'cleanedExpired': cleaned,
+            'expirationDays': EXPIRATION_DAYS,
+            'features': {
+                'qrCodeDetection': qr_available
+            }
+        })
+
+    def handle_results_get(self):
+        """Handle POST /api/results/{entry_ref} for result retrieval"""
+        try:
+            # Extract entry ref from path
+            entry_ref = self.path.split('/')[-1].upper()
+
+            # Parse request body for secret key
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self.send_json({'error': 'Request body required with secretKey'}, 400)
+                return
+
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body.decode('utf-8'))
+            except json.JSONDecodeError:
+                self.send_json({'error': 'Invalid JSON'}, 400)
+                return
+
+            secret_key = data.get('secretKey')
+            if not secret_key:
+                self.send_json({'error': 'secretKey is required'}, 400)
+                return
+
+            # Retrieve results
+            storage = get_storage()
+            result, error = storage.retrieve(entry_ref, secret_key, self.get_client_ip())
+
+            if error:
+                status = 404 if 'not found' in error.lower() else 401
+                self.send_json({'error': error}, status)
+                return
+
+            self.send_json({
+                'success': True,
+                **result
+            })
+
+        except Exception as e:
+            self.send_json({'error': f'Retrieval failed: {str(e)}'}, 500)
+
+    def handle_results_delete(self):
+        """Handle DELETE /api/results/{entry_ref} for result deletion"""
+        try:
+            # Extract entry ref from path
+            entry_ref = self.path.split('/')[-1].upper()
+
+            # Parse request body for secret key
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self.send_json({'error': 'Request body required with secretKey'}, 400)
+                return
+
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body.decode('utf-8'))
+            except json.JSONDecodeError:
+                self.send_json({'error': 'Invalid JSON'}, 400)
+                return
+
+            secret_key = data.get('secretKey')
+            if not secret_key:
+                self.send_json({'error': 'secretKey is required'}, 400)
+                return
+
+            # Delete result
+            storage = get_storage()
+            success, error = storage.delete(entry_ref, secret_key, self.get_client_ip())
+
+            if error:
+                status = 404 if 'not found' in error.lower() else 401
+                self.send_json({'error': error}, status)
+                return
+
+            self.send_json({
+                'success': True,
+                'message': f'Entry {entry_ref} deleted successfully'
+            })
+
+        except Exception as e:
+            self.send_json({'error': f'Deletion failed: {str(e)}'}, 500)
+
+    def handle_file_analysis(self, analysis_type):
+        """Handle file upload and analysis"""
+        try:
+            # Check content length
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length > MAX_FILE_SIZE:
+                self.send_json({'error': 'File too large. Maximum size is 10MB.'}, 413)
+                return
+
+            if content_length == 0:
+                self.send_json({'error': 'No file uploaded'}, 400)
+                return
+
+            # Parse multipart form data
+            content_type = self.headers.get('Content-Type', '')
+
+            if 'multipart/form-data' in content_type:
+                # Parse boundary
+                boundary = None
+                for part in content_type.split(';'):
+                    part = part.strip()
+                    if part.startswith('boundary='):
+                        boundary = part[9:].strip('"')
+                        break
+
+                if not boundary:
+                    self.send_json({'error': 'Invalid multipart form data'}, 400)
+                    return
+
+                # Read and parse body
+                body = self.rfile.read(content_length)
+
+                # Parse multipart data
+                file_data, filename, secret_key = self.parse_multipart_with_secret(body, boundary)
+
+                if not file_data:
+                    self.send_json({'error': 'No file found in request'}, 400)
+                    return
+
+                # Validate secret key
+                if not secret_key:
+                    self.send_json({'error': 'Secret key is required (minimum 8 characters)'}, 400)
+                    return
+
+                if len(secret_key) < MIN_SECRET_KEY_LENGTH:
+                    self.send_json({'error': f'Secret key must be at least {MIN_SECRET_KEY_LENGTH} characters'}, 400)
+                    return
+
+            else:
+                self.send_json({'error': 'Multipart form data required'}, 400)
+                return
+
+            # Validate file type and analyze
+            if analysis_type == 'email':
+                if not filename.lower().endswith('.eml'):
+                    # Try to detect by content
+                    if not (b'From:' in file_data or b'Subject:' in file_data or b'MIME-Version:' in file_data):
+                        self.send_json({'error': 'Invalid email file. Please upload a .eml file.'}, 400)
+                        return
+                result = analyze_email(file_data)
+
+            elif analysis_type == 'pdf':
+                if not file_data.startswith(b'%PDF'):
+                    self.send_json({'error': 'Invalid PDF file.'}, 400)
+                    return
+                result = analyze_pdf(file_data)
+
+            elif analysis_type == 'office':
+                # Check magic bytes for Office documents
+                is_ole = file_data[:8] == b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'  # OLE compound file
+                is_ooxml = file_data[:4] == b'PK\x03\x04'  # ZIP (OOXML format)
+
+                if not (is_ole or is_ooxml):
+                    self.send_json({'error': 'Invalid Office document.'}, 400)
+                    return
+
+                result = analyze_office(file_data, filename)
+            else:
+                self.send_json({'error': 'Unknown analysis type'}, 400)
+                return
+
+            # If analysis successful, store results
+            if result.get('success'):
+                storage = get_storage()
+                entry_ref, expires_at = storage.store(
+                    filename,
+                    analysis_type,
+                    file_data,
+                    result,
+                    secret_key,
+                    self.get_client_ip()
+                )
+
+                # Add storage info to result
+                result['entryRef'] = entry_ref
+                result['expiresAt'] = expires_at
+                result['storedAt'] = datetime.now().isoformat()
+
+            self.send_json(result)
+
+        except Exception as e:
+            self.send_json({'error': f'Analysis failed: {str(e)}'}, 500)
+
+    def parse_multipart_with_secret(self, body, boundary):
+        """Parse multipart form data and extract file and secret key"""
+        boundary_bytes = boundary.encode()
+        parts = body.split(b'--' + boundary_bytes)
+
+        file_data = None
+        filename = 'uploaded_file'
+        secret_key = None
+
+        for part in parts:
+            if b'Content-Disposition' not in part:
+                continue
+
+            # Split headers from content
+            if b'\r\n\r\n' in part:
+                headers_part, content = part.split(b'\r\n\r\n', 1)
+            elif b'\n\n' in part:
+                headers_part, content = part.split(b'\n\n', 1)
+            else:
+                continue
+
+            headers_str = headers_part.decode('utf-8', errors='ignore')
+
+            # Check if this is a file field
+            if 'filename=' in headers_str:
+                # Extract filename
+                filename_match = re.search(r'filename="([^"]+)"', headers_str)
+                if not filename_match:
+                    filename_match = re.search(r"filename='([^']+)'", headers_str)
+
+                filename = filename_match.group(1) if filename_match else 'uploaded_file'
+
+                # Remove trailing boundary markers
+                content = content.rstrip(b'\r\n')
+                if content.endswith(b'--'):
+                    content = content[:-2].rstrip(b'\r\n')
+
+                file_data = content
+
+            # Check for secretKey field
+            elif 'name="secretKey"' in headers_str or "name='secretKey'" in headers_str:
+                content = content.rstrip(b'\r\n')
+                if content.endswith(b'--'):
+                    content = content[:-2].rstrip(b'\r\n')
+                secret_key = content.decode('utf-8', errors='ignore').strip()
+
+        return file_data, filename, secret_key
 
     def get_client_ip(self):
         forwarded = self.headers.get('X-Forwarded-For')
@@ -207,8 +2447,17 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
         print(f"[{self.log_date_time_string()}] {args[0]}")
 
 
+class ReuseAddrHTTPServer(HTTPServer):
+    """HTTPServer with SO_REUSEADDR enabled to prevent address already in use errors"""
+    allow_reuse_address = True
+
+
 def main():
-    server = HTTPServer(('0.0.0.0', PORT), IPLookupHandler)
+    # Initialize storage on startup
+    get_storage()
+    print(f"Database initialized at {DATABASE_FILE}")
+
+    server = ReuseAddrHTTPServer(('0.0.0.0', PORT), IPLookupHandler)
     print(f"IP Lookup server running at http://localhost:{PORT}")
     try:
         server.serve_forever()

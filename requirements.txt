@@ -1,0 +1,6 @@
+pypdf>=3.0.0
+oletools>=0.60.0
+cryptography>=41.0.0
+python-whois>=0.8.0
+pyzbar>=0.1.9
+Pillow>=10.0.0
