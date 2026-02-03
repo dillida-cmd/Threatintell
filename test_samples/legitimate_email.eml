@@ -1,0 +1,41 @@
+From: newsletter@company.com
+To: user@example.com
+Subject: Monthly Newsletter - February 2026
+Date: Mon, 3 Feb 2026 09:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset="UTF-8"
+List-Unsubscribe: <mailto:unsubscribe@company.com>
+X-Mailer: MailChimp
+
+<!DOCTYPE html>
+<html>
+<head>
+<title>Monthly Newsletter</title>
+</head>
+<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+<h1 style="color: #333;">February 2026 Newsletter</h1>
+
+<p>Hello,</p>
+
+<p>Welcome to our monthly newsletter! Here's what's new:</p>
+
+<h2>Product Updates</h2>
+<ul>
+<li>New dashboard features released</li>
+<li>Performance improvements</li>
+<li>Bug fixes and stability updates</li>
+</ul>
+
+<h2>Upcoming Events</h2>
+<p>Join us for our webinar on February 15th at 2:00 PM EST.</p>
+
+<p>Best regards,<br>The Team</p>
+
+<hr>
+<p style="font-size: 11px; color: #666;">
+You received this email because you subscribed to our newsletter.<br>
+<a href="https://company.com/unsubscribe">Unsubscribe</a> |
+<a href="https://company.com/privacy">Privacy Policy</a>
+</p>
+</body>
+</html>
