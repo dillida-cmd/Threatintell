@@ -27,6 +27,30 @@ except ImportError:
     THREAT_INTEL_AVAILABLE = False
     print("[Warning] threat_intel module not available")
 
+# Import screenshot service
+try:
+    import screenshot_service
+    SCREENSHOT_AVAILABLE = True
+except ImportError:
+    SCREENSHOT_AVAILABLE = False
+    print("[Warning] screenshot_service module not available")
+
+# Import PDF export service
+try:
+    import pdf_export
+    PDF_EXPORT_AVAILABLE = True
+except ImportError:
+    PDF_EXPORT_AVAILABLE = False
+    print("[Warning] pdf_export module not available")
+
+# Import sandbox service
+try:
+    import sandbox_service
+    SANDBOX_AVAILABLE = True
+except ImportError:
+    SANDBOX_AVAILABLE = False
+    print("[Warning] sandbox_service module not available")
+
 PORT = 3000
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 DATABASE_FILE = os.path.join(os.path.dirname(__file__), 'analysis_results.db')
@@ -2477,6 +2501,12 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             self.handle_ioc_export()
         elif self.path == '/api/ioc/stats':
             self.handle_ioc_stats()
+        elif self.path == '/api/screenshot/status':
+            self.handle_screenshot_status()
+        elif self.path == '/api/export/pdf/status':
+            self.handle_pdf_export_status()
+        elif self.path == '/api/sandbox/status':
+            self.handle_sandbox_status()
         else:
             # For SPA routing: serve index.html for non-file paths
             if not self.path.startswith('/api') and '.' not in self.path.split('/')[-1]:
@@ -2507,6 +2537,14 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             self.handle_cache_clear()
         elif self.path == '/api/threat-intel/cache/cleanup':
             self.handle_cache_cleanup()
+        elif self.path == '/api/screenshot/url':
+            self.handle_screenshot_capture()
+        elif self.path == '/api/export/pdf':
+            self.handle_pdf_export()
+        elif self.path == '/api/sandbox/analyze':
+            self.handle_sandbox_analyze()
+        elif self.path == '/api/sandbox/url':
+            self.handle_sandbox_url()
         else:
             self.send_json({'error': 'Not found'}, 404)
 
@@ -2533,6 +2571,34 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
         except (ImportError, Exception):
             qr_available = False
 
+        # Check screenshot service availability
+        screenshot_available = SCREENSHOT_AVAILABLE
+        if screenshot_available:
+            try:
+                ss_status = screenshot_service.check_browser_available()
+                screenshot_available = any(ss_status.values())
+            except:
+                screenshot_available = False
+
+        # Check PDF export availability
+        pdf_available = PDF_EXPORT_AVAILABLE
+        if pdf_available:
+            try:
+                pdf_caps = pdf_export.check_pdf_available()
+                pdf_available = pdf_caps.get('pdf_generation', False)
+            except:
+                pdf_available = False
+
+        # Check sandbox service availability
+        sandbox_available = SANDBOX_AVAILABLE
+        if sandbox_available:
+            try:
+                sb_service = sandbox_service.get_service()
+                sb_status = sb_service.get_status()
+                sandbox_available = sb_status.get('status') in ('available', 'limited')
+            except:
+                sandbox_available = False
+
         self.send_json({
             'status': 'healthy',
             'storage': stats,
@@ -2540,7 +2606,10 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             'expirationDays': EXPIRATION_DAYS,
             'features': {
                 'qrCodeDetection': qr_available,
-                'threatIntel': THREAT_INTEL_AVAILABLE
+                'threatIntel': THREAT_INTEL_AVAILABLE,
+                'screenshot': screenshot_available,
+                'pdfExport': pdf_available,
+                'sandbox': sandbox_available
             }
         })
 
@@ -2830,6 +2899,354 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                 self.send_json({'error': 'Threat intelligence module not available'}, 503)
 
         except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_screenshot_status(self):
+        """Handle GET /api/screenshot/status - get screenshot service status"""
+        if SCREENSHOT_AVAILABLE:
+            status = screenshot_service.get_service_status()
+            self.send_json(status)
+        else:
+            self.send_json({
+                'service': 'screenshot',
+                'status': 'unavailable',
+                'error': 'Screenshot module not loaded'
+            })
+
+    def handle_pdf_export_status(self):
+        """Handle GET /api/export/pdf/status - get PDF export service status"""
+        if PDF_EXPORT_AVAILABLE:
+            status = pdf_export.get_export_status()
+            self.send_json(status)
+        else:
+            self.send_json({
+                'service': 'pdf_export',
+                'status': 'unavailable',
+                'error': 'PDF export module not loaded'
+            })
+
+    def handle_screenshot_capture(self):
+        """Handle POST /api/screenshot/url - capture URL screenshot"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            url = data.get('url')
+            if not url:
+                self.send_json({'error': 'URL is required'}, 400)
+                return
+
+            if not SCREENSHOT_AVAILABLE:
+                self.send_json({'error': 'Screenshot service not available'}, 503)
+                return
+
+            # Optional parameters
+            user_agent = data.get('userAgent')
+            browser = data.get('browser', 'auto')
+            width = data.get('width', 1920)
+            height = data.get('height', 1080)
+            timeout = min(data.get('timeout', 30), 60)  # Max 60 seconds
+
+            result = screenshot_service.capture_url_screenshot(
+                url=url,
+                user_agent=user_agent,
+                browser=browser,
+                width=width,
+                height=height,
+                timeout=timeout
+            )
+
+            self.send_json(result)
+
+        except json.JSONDecodeError:
+            self.send_json({'error': 'Invalid JSON'}, 400)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_pdf_export(self):
+        """Handle POST /api/export/pdf - export analysis to encrypted PDF"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            # Get required parameters
+            entry_ref = data.get('entryRef')
+            secret_key = data.get('secretKey')
+
+            if not entry_ref:
+                self.send_json({'error': 'entryRef is required'}, 400)
+                return
+
+            if not secret_key:
+                self.send_json({'error': 'secretKey is required'}, 400)
+                return
+
+            if len(secret_key) < MIN_SECRET_KEY_LENGTH:
+                self.send_json({'error': f'Secret key must be at least {MIN_SECRET_KEY_LENGTH} characters'}, 400)
+                return
+
+            if not PDF_EXPORT_AVAILABLE:
+                self.send_json({'error': 'PDF export service not available'}, 503)
+                return
+
+            # First retrieve the analysis result
+            storage = get_storage()
+            analysis_result, error = storage.retrieve(entry_ref.upper(), secret_key, self.get_client_ip())
+
+            if error:
+                status = 404 if 'not found' in error.lower() else 401
+                self.send_json({'error': error}, status)
+                return
+
+            # Optional: capture screenshots for URLs in the result
+            include_screenshots = data.get('includeScreenshots', False)
+            if include_screenshots and SCREENSHOT_AVAILABLE:
+                urls = analysis_result.get('urls', [])[:5]  # Limit to 5 URLs
+                screenshots = []
+                for url in urls:
+                    try:
+                        screenshot_result = screenshot_service.capture_url_screenshot(
+                            url=url,
+                            width=1280,
+                            height=720,
+                            timeout=20
+                        )
+                        if screenshot_result.get('success'):
+                            screenshots.append(screenshot_result)
+                    except:
+                        pass
+                analysis_result['screenshots'] = screenshots
+
+            # Export to PDF
+            result = pdf_export.export_analysis_to_pdf(
+                analysis_result=analysis_result,
+                secret_key=secret_key,
+                include_screenshot=include_screenshots
+            )
+
+            self.send_json(result)
+
+        except json.JSONDecodeError:
+            self.send_json({'error': 'Invalid JSON'}, 400)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_sandbox_status(self):
+        """Handle GET /api/sandbox/status - get sandbox service status"""
+        if SANDBOX_AVAILABLE:
+            service = sandbox_service.get_service()
+            status = service.get_status()
+            self.send_json(status)
+        else:
+            self.send_json({
+                'service': 'sandbox',
+                'status': 'unavailable',
+                'error': 'Sandbox module not loaded',
+                'backends': {'docker': False, 'bubblewrap': False},
+                'capabilities': {'scripts': False, 'executables': False, 'documents': False}
+            })
+
+    def handle_sandbox_analyze(self):
+        """Handle POST /api/sandbox/analyze - analyze file in sandbox"""
+        try:
+            if not SANDBOX_AVAILABLE:
+                self.send_json({'error': 'Sandbox service not available'}, 503)
+                return
+
+            # Parse multipart form data
+            content_type = self.headers.get('Content-Type', '')
+            if 'multipart/form-data' not in content_type:
+                self.send_json({'error': 'Content-Type must be multipart/form-data'}, 400)
+                return
+
+            # Parse boundary
+            boundary = None
+            for part in content_type.split(';'):
+                part = part.strip()
+                if part.startswith('boundary='):
+                    boundary = part[9:].strip('"')
+                    break
+
+            if not boundary:
+                self.send_json({'error': 'Multipart boundary not found'}, 400)
+                return
+
+            # Read content
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length > 50 * 1024 * 1024:  # 50MB limit for sandbox
+                self.send_json({'error': 'File too large. Maximum size is 50MB'}, 400)
+                return
+
+            body = self.rfile.read(content_length)
+
+            # Parse multipart data
+            file_data = None
+            filename = None
+            secret_key = None
+            timeout = 30
+
+            boundary_bytes = boundary.encode()
+            parts = body.split(b'--' + boundary_bytes)
+
+            for part in parts:
+                if b'Content-Disposition' not in part:
+                    continue
+
+                # Extract headers and content
+                header_end = part.find(b'\r\n\r\n')
+                if header_end == -1:
+                    continue
+
+                headers = part[:header_end].decode('utf-8', errors='replace')
+                content = part[header_end + 4:]
+
+                # Remove trailing boundary markers
+                if content.endswith(b'\r\n'):
+                    content = content[:-2]
+                if content.endswith(b'--'):
+                    content = content[:-2]
+                if content.endswith(b'\r\n'):
+                    content = content[:-2]
+
+                # Check field name
+                if 'name="file"' in headers:
+                    file_data = content
+                    # Extract filename
+                    for header_part in headers.split('\r\n'):
+                        if 'filename="' in header_part:
+                            start = header_part.find('filename="') + 10
+                            end = header_part.find('"', start)
+                            if end > start:
+                                filename = header_part[start:end]
+
+                elif 'name="secretKey"' in headers:
+                    secret_key = content.decode('utf-8').strip()
+
+                elif 'name="timeout"' in headers:
+                    try:
+                        timeout = min(int(content.decode('utf-8').strip()), 300)
+                    except ValueError:
+                        pass
+
+            if not file_data:
+                self.send_json({'error': 'No file provided'}, 400)
+                return
+
+            if not filename:
+                filename = 'unknown_sample'
+
+            if not secret_key:
+                self.send_json({'error': 'secretKey is required'}, 400)
+                return
+
+            if len(secret_key) < MIN_SECRET_KEY_LENGTH:
+                self.send_json({'error': f'Secret key must be at least {MIN_SECRET_KEY_LENGTH} characters'}, 400)
+                return
+
+            # Analyze file in sandbox
+            service = sandbox_service.get_service()
+            result = service.analyze_file(
+                file_data=file_data,
+                filename=filename,
+                secret_key=secret_key,
+                timeout=timeout
+            )
+
+            # Store result if analysis was successful
+            if result.get('success'):
+                storage = get_storage()
+                entry_ref, expires_at = storage.store(
+                    filename=filename,
+                    file_type='sandbox',
+                    file_data=file_data,
+                    results={
+                        'type': 'sandbox',
+                        'filename': filename,
+                        **result
+                    },
+                    secret_key=secret_key,
+                    client_ip=self.get_client_ip()
+                )
+                result['entryRef'] = entry_ref
+                result['expiresAt'] = expires_at
+
+            self.send_json(result)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_sandbox_url(self):
+        """Handle POST /api/sandbox/url - analyze URL in sandbox"""
+        try:
+            if not SANDBOX_AVAILABLE:
+                self.send_json({'error': 'Sandbox service not available'}, 503)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            url = data.get('url')
+            if not url:
+                self.send_json({'error': 'URL is required'}, 400)
+                return
+
+            secret_key = data.get('secretKey')
+            if not secret_key:
+                self.send_json({'error': 'secretKey is required'}, 400)
+                return
+
+            if len(secret_key) < MIN_SECRET_KEY_LENGTH:
+                self.send_json({'error': f'Secret key must be at least {MIN_SECRET_KEY_LENGTH} characters'}, 400)
+                return
+
+            mode = data.get('mode', 'http')
+            if mode not in ('http', 'browser'):
+                self.send_json({'error': 'mode must be "http" or "browser"'}, 400)
+                return
+
+            timeout = min(data.get('timeout', 30), 300)
+
+            # Analyze URL in sandbox
+            service = sandbox_service.get_service()
+            result = service.analyze_url(
+                url=url,
+                mode=mode,
+                secret_key=secret_key,
+                timeout=timeout
+            )
+
+            # Store result if analysis was successful
+            if result.get('success'):
+                storage = get_storage()
+                # Use URL as "file data" for hashing
+                url_bytes = url.encode('utf-8')
+                entry_ref, expires_at = storage.store(
+                    filename=url,
+                    file_type='sandbox_url',
+                    file_data=url_bytes,
+                    results={
+                        'type': 'sandbox_url',
+                        'url': url,
+                        **result
+                    },
+                    secret_key=secret_key,
+                    client_ip=self.get_client_ip()
+                )
+                result['entryRef'] = entry_ref
+                result['expiresAt'] = expires_at
+
+            self.send_json(result)
+
+        except json.JSONDecodeError:
+            self.send_json({'error': 'Invalid JSON'}, 400)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.send_json({'error': str(e)}, 500)
 
     def handle_results_get(self):
