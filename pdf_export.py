@@ -416,12 +416,16 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
                 story.append(Paragraph(f"... and {len(urls) - 20} more URLs", body_style))
             story.append(Spacer(1, 10))
 
-        # Suspicious Indicators
-        indicators = analysis_result.get('suspiciousIndicators', [])
+        # Suspicious Indicators / Phishing Indicators
+        indicators = analysis_result.get('suspiciousIndicators', []) or analysis_result.get('phishingIndicators', [])
         if indicators:
             story.append(Paragraph("Suspicious Indicators", heading_style))
             for ind in indicators:
-                ind_text = f"• [{ind.get('type', 'Unknown')}] {ind.get('description', 'N/A')}"
+                severity = ind.get('severity', 'unknown')
+                ind_type = ind.get('type', 'Unknown')
+                desc = ind.get('description', 'N/A')
+                severity_color = 'red' if severity == 'high' else ('orange' if severity == 'medium' else 'black')
+                ind_text = f"• <font color='{severity_color}'>[{severity.upper()}]</font> {ind_type}: {desc}"
                 story.append(Paragraph(ind_text, body_style))
             story.append(Spacer(1, 10))
 

@@ -1209,6 +1209,92 @@ def extract_images_from_pdf(file_data):
     return images[:30]  # Limit to 30 images
 
 
+def generate_pdf_page_screenshots(file_data, max_pages=10, dpi=150):
+    """Generate screenshots of PDF pages using PyMuPDF"""
+    screenshots = []
+
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(stream=file_data, filetype="pdf")
+        num_pages = min(doc.page_count, max_pages)
+
+        for page_num in range(num_pages):
+            try:
+                page = doc[page_num]
+                # Render page as image
+                zoom = dpi / 72  # 72 dpi is the default
+                mat = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat)
+
+                # Convert to PNG bytes
+                img_bytes = pix.tobytes("png")
+
+                # Encode as base64
+                img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+                screenshots.append(img_base64)
+
+            except Exception as e:
+                print(f"[PDF Screenshot] Failed to render page {page_num + 1}: {e}")
+                continue
+
+        doc.close()
+
+    except ImportError:
+        print("[PDF Screenshot] PyMuPDF (fitz) not installed")
+    except Exception as e:
+        print(f"[PDF Screenshot] Error: {e}")
+
+    return screenshots
+
+
+def generate_office_screenshots(file_data, filename, max_pages=10):
+    """Generate screenshots of Office documents by converting to PDF first"""
+    screenshots = []
+
+    try:
+        import subprocess
+        import tempfile
+
+        # Check if LibreOffice is available
+        result = subprocess.run(['which', 'libreoffice'], capture_output=True, text=True)
+        if result.returncode != 0:
+            print("[Office Screenshot] LibreOffice not available")
+            return screenshots
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Save the file temporarily
+            input_path = os.path.join(tmpdir, filename)
+            with open(input_path, 'wb') as f:
+                f.write(file_data)
+
+            # Convert to PDF using LibreOffice
+            try:
+                subprocess.run([
+                    'libreoffice', '--headless', '--convert-to', 'pdf',
+                    '--outdir', tmpdir, input_path
+                ], capture_output=True, timeout=60)
+
+                # Find the converted PDF
+                pdf_filename = os.path.splitext(filename)[0] + '.pdf'
+                pdf_path = os.path.join(tmpdir, pdf_filename)
+
+                if os.path.exists(pdf_path):
+                    with open(pdf_path, 'rb') as f:
+                        pdf_data = f.read()
+                    screenshots = generate_pdf_page_screenshots(pdf_data, max_pages)
+
+            except subprocess.TimeoutExpired:
+                print("[Office Screenshot] Conversion timed out")
+            except Exception as e:
+                print(f"[Office Screenshot] Conversion error: {e}")
+
+    except Exception as e:
+        print(f"[Office Screenshot] Error: {e}")
+
+    return screenshots
+
+
 def scan_for_qr_codes(images):
     """Scan a list of images for QR codes"""
     all_qr_codes = []
@@ -1492,7 +1578,7 @@ def extract_urls_from_email(msg):
 
 
 def extract_attachments(msg):
-    """Extract attachment metadata from email"""
+    """Extract attachment metadata and data from email"""
     attachments = []
 
     if msg.is_multipart():
@@ -1503,20 +1589,34 @@ def extract_attachments(msg):
                 if filename:
                     content_type = part.get_content_type()
                     try:
-                        size = len(part.get_payload(decode=True) or b'')
+                        payload = part.get_payload(decode=True) or b''
+                        size = len(payload)
+                        # Encode attachment data as base64 for frontend download/analysis
+                        data_base64 = base64.b64encode(payload).decode('utf-8') if payload else None
                     except Exception:
                         size = 0
+                        data_base64 = None
 
                     # Check if suspicious
                     ext = os.path.splitext(filename)[1].lower()
                     is_suspicious = ext in SUSPICIOUS_EXTENSIONS
+
+                    # Calculate hashes for the attachment
+                    att_md5 = None
+                    att_sha256 = None
+                    if payload:
+                        att_md5 = hashlib.md5(payload).hexdigest()
+                        att_sha256 = hashlib.sha256(payload).hexdigest()
 
                     attachments.append({
                         'filename': filename,
                         'contentType': content_type,
                         'size': size,
                         'extension': ext,
-                        'isSuspicious': is_suspicious
+                        'isSuspicious': is_suspicious,
+                        'data': data_base64,
+                        'md5': att_md5,
+                        'sha256': att_sha256
                     })
 
     return attachments
@@ -1815,6 +1915,9 @@ def analyze_pdf(file_data):
         images = extract_images_from_pdf(file_data)
         qr_codes = scan_for_qr_codes(images)
 
+        # Generate page screenshots
+        page_screenshots = generate_pdf_page_screenshots(file_data, max_pages=10)
+
         # Collect QR code URLs
         qr_urls = []
         qr_risk_indicators = []
@@ -1886,6 +1989,7 @@ def analyze_pdf(file_data):
             'processTriggers': process_triggers,
             'qrCodes': qr_codes,
             'qrCodeCount': len(qr_codes),
+            'pageScreenshots': page_screenshots,
             'riskScore': risk_score,
             'riskLevel': get_risk_level(risk_score),
             'suspiciousIndicators': suspicious_indicators,
@@ -2341,6 +2445,9 @@ def analyze_office(file_data, filename):
                 'description': f"Threat intelligence: {ioc_investigation['summary']['maliciousIOCs']} malicious URLs detected"
             })
 
+    # Generate document screenshots (convert to PDF first, then render pages)
+    results['documentScreenshots'] = generate_office_screenshots(file_data, filename, max_pages=10)
+
     return results
 
 
@@ -2541,6 +2648,8 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             self.handle_screenshot_capture()
         elif self.path == '/api/export/pdf':
             self.handle_pdf_export()
+        elif self.path.startswith('/api/retrieve/'):
+            self.handle_retrieve()
         elif self.path == '/api/sandbox/analyze':
             self.handle_sandbox_analyze()
         elif self.path == '/api/sandbox/url':
@@ -2993,12 +3102,22 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
 
             # First retrieve the analysis result
             storage = get_storage()
-            analysis_result, error = storage.retrieve(entry_ref.upper(), secret_key, self.get_client_ip())
+            raw_result, error = storage.retrieve(entry_ref.upper(), secret_key, self.get_client_ip())
 
             if error:
                 status = 404 if 'not found' in error.lower() else 401
                 self.send_json({'error': error}, status)
                 return
+
+            # Flatten the result - merge metadata and actual analysis results
+            analysis_result = {
+                'entryRef': raw_result.get('entryRef'),
+                'filename': raw_result.get('originalFilename'),
+                'riskScore': raw_result.get('riskScore'),
+                'riskLevel': raw_result.get('riskLevel'),
+            }
+            if raw_result.get('results'):
+                analysis_result.update(raw_result['results'])
 
             # Optional: capture screenshots for URLs in the result
             include_screenshots = data.get('includeScreenshots', False)
@@ -3027,6 +3146,66 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             )
 
             self.send_json(result)
+
+        except json.JSONDecodeError:
+            self.send_json({'error': 'Invalid JSON'}, 400)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_retrieve(self):
+        """Handle POST /api/retrieve/{entryRef} - retrieve analysis results"""
+        try:
+            # Extract entry_ref from path
+            entry_ref = self.path.split('/api/retrieve/')[-1]
+            if not entry_ref:
+                self.send_json({'error': 'Entry reference is required'}, 400)
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            secret_key = data.get('secretKey')
+            if not secret_key:
+                self.send_json({'error': 'secretKey is required'}, 400)
+                return
+
+            if len(secret_key) < MIN_SECRET_KEY_LENGTH:
+                self.send_json({'error': f'Secret key must be at least {MIN_SECRET_KEY_LENGTH} characters'}, 400)
+                return
+
+            # Retrieve the analysis result
+            storage = get_storage()
+            result, error = storage.retrieve(entry_ref.upper(), secret_key, self.get_client_ip())
+
+            if error:
+                status = 404 if 'not found' in error.lower() else 401
+                self.send_json({'success': False, 'error': error}, status)
+                return
+
+            # Flatten the results into the top-level object for easier frontend consumption
+            # The storage returns: {entryRef, originalFilename, fileType, ..., results: {actual analysis data}}
+            # We want to merge results into the top level
+            flattened = {
+                'success': True,
+                'entryRef': result.get('entryRef'),
+                'originalFilename': result.get('originalFilename'),
+                'fileType': result.get('fileType'),
+                'fileHash': result.get('fileHash'),
+                'fileSize': result.get('fileSize'),
+                'riskScore': result.get('riskScore'),
+                'riskLevel': result.get('riskLevel'),
+                'createdAt': result.get('createdAt'),
+                'expiresAt': result.get('expiresAt'),
+                'storedAt': result.get('createdAt'),  # Alias for frontend
+                'accessCount': result.get('accessCount'),
+            }
+
+            # Merge the actual analysis results
+            if result.get('results'):
+                flattened.update(result['results'])
+
+            self.send_json(flattened)
 
         except json.JSONDecodeError:
             self.send_json({'error': 'Invalid JSON'}, 400)

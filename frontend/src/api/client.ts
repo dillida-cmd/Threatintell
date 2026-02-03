@@ -1,83 +1,145 @@
-import axios from 'axios';
-import type {
-  IpLookupResult,
-  AnalysisResponse,
-  RetrieveResponse,
-  ApiStatus,
-  FileType,
-  IpInvestigation
-} from '../types';
+import axios from 'axios'
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 60000,
-});
+  timeout: 120000,
+})
 
-// Response interceptor for error handling
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    const message = error.response?.data?.error || error.message || 'An error occurred';
-    return Promise.reject(new Error(message));
+// IP Lookup
+export const lookupIp = async (ip: string) => {
+  const [basicRes, threatRes] = await Promise.all([
+    api.get(`/lookup/${ip}`),
+    api.post('/threat-intel/investigate/ip', { ip }),
+  ])
+  return {
+    basic: basicRes.data,
+    threat: threatRes.data,
   }
-);
+}
 
-export const getVisitorIp = async (): Promise<string> => {
-  const response = await api.get<{ ip: string }>('/my-ip');
-  return response.data.ip;
-};
+// URL Lookup - Threat Intel
+export const lookupUrlThreat = async (url: string) => {
+  const response = await api.post('/threat-intel/investigate/url', { url })
+  return response.data
+}
 
-export const lookupIp = async (ip?: string): Promise<IpLookupResult> => {
-  const url = ip ? `/lookup/${encodeURIComponent(ip)}` : '/lookup';
-  const response = await api.get<IpLookupResult>(url);
-  return response.data;
-};
+// URL Analysis - Sandbox with screenshots
+export const analyzeUrl = async (url: string) => {
+  const response = await api.post('/sandbox/url', {
+    url,
+    secretKey: 'shieldtier_default',
+    mode: 'browser',
+  })
+  return response.data
+}
 
-export const analyzeFile = async (
-  type: FileType,
-  file: File,
-  secretKey: string
-): Promise<AnalysisResponse> => {
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('secretKey', secretKey);
+// Hash Lookup
+export const lookupHash = async (hash: string) => {
+  const response = await api.post('/threat-intel/investigate/hash', { hash })
+  return response.data
+}
 
-  const response = await api.post<AnalysisResponse>(`/analyze/${type}`, formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  });
-  return response.data;
-};
+// File Analysis
+export const analyzeFile = async (file: File, secretKey: string) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('secretKey', secretKey)
 
-export const retrieveResults = async (
-  entryRef: string,
-  secretKey: string
-): Promise<RetrieveResponse> => {
-  const response = await api.post<RetrieveResponse>(`/results/${encodeURIComponent(entryRef)}`, {
+  // Determine endpoint based on file type
+  const ext = file.name.toLowerCase().split('.').pop() || ''
+  let endpoint = '/analyze/email'
+
+  if (['eml', 'msg'].includes(ext)) {
+    endpoint = '/analyze/email'
+  } else if (ext === 'pdf') {
+    endpoint = '/analyze/pdf'
+  } else if (['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp'].includes(ext)) {
+    endpoint = '/analyze/office'
+  } else if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'].includes(ext)) {
+    endpoint = '/analyze/qrcode'
+  } else if (['exe', 'dll', 'msi', 'sh', 'py', 'js', 'bat', 'ps1', 'vbs'].includes(ext)) {
+    endpoint = '/sandbox/analyze'
+  }
+
+  const response = await api.post(endpoint, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000,
+  })
+  return response.data
+}
+
+// Analyze attachment (for email attachments)
+export const analyzeAttachment = async (attachmentData: string, filename: string, secretKey: string) => {
+  // Convert base64 to blob
+  const byteCharacters = atob(attachmentData)
+  const byteNumbers = new Array(byteCharacters.length)
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i)
+  }
+  const byteArray = new Uint8Array(byteNumbers)
+  const blob = new Blob([byteArray])
+  const file = new File([blob], filename)
+
+  // Determine endpoint based on file extension
+  const ext = filename.toLowerCase().split('.').pop() || ''
+  let endpoint = '/sandbox/analyze'
+
+  if (ext === 'pdf') {
+    endpoint = '/analyze/pdf'
+  } else if (['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp'].includes(ext)) {
+    endpoint = '/analyze/office'
+  } else if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'].includes(ext)) {
+    endpoint = '/analyze/qrcode'
+  }
+
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('secretKey', secretKey)
+
+  const response = await api.post(endpoint, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000,
+  })
+  return response.data
+}
+
+// Retrieve Analysis
+export const retrieveAnalysis = async (entryRef: string, secretKey: string) => {
+  const response = await api.post(`/retrieve/${entryRef}`, { secretKey })
+  return response.data
+}
+
+// Download PDF Report
+export const downloadPdfReport = async (entryRef: string, secretKey: string) => {
+  const response = await api.post('/export/pdf', {
+    entryRef,
     secretKey,
-  });
-  return response.data;
-};
+  })
 
-export const getStatus = async (): Promise<ApiStatus> => {
-  const response = await api.get<ApiStatus>('/status');
-  return response.data;
-};
+  // Response contains pdf_base64 field
+  const data = response.data
+  if (!data.success || !data.pdf_base64) {
+    throw new Error(data.error || 'Failed to generate PDF')
+  }
 
-export const investigateIp = async (ip: string): Promise<IpInvestigation> => {
-  const response = await api.post<IpInvestigation>('/threat-intel/investigate/ip', { ip });
-  return response.data;
-};
+  // Decode base64 to blob
+  const byteCharacters = atob(data.pdf_base64)
+  const byteNumbers = new Array(byteCharacters.length)
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i)
+  }
+  const byteArray = new Uint8Array(byteNumbers)
+  const blob = new Blob([byteArray], { type: 'application/pdf' })
 
-export const investigateUrl = async (url: string): Promise<any> => {
-  const response = await api.post('/threat-intel/investigate/url', { url });
-  return response.data;
-};
+  // Create download link
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.setAttribute('download', `${entryRef}_report.pdf`)
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
+}
 
-export const investigateHash = async (hash: string): Promise<any> => {
-  const response = await api.post('/threat-intel/investigate/hash', { hash });
-  return response.data;
-};
-
-export default api;
+export default api
