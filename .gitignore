@@ -29,3 +29,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Node.js
+node_modules/
+.npm/
+
+# Build output (keep for deployment, but optional)
+# frontend/dist/
