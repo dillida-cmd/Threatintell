@@ -146,14 +146,73 @@ echo -e "${GREEN}  ✓ Created stop.sh${NC}"
 # Get local IP
 LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
 
+# Ask about service installation
+echo ""
+echo -e "${YELLOW}Would you like to install as a system service? (auto-start on boot)${NC}"
+echo -e "This requires sudo/root access."
+read -p "Install service? [y/N]: " INSTALL_SERVICE
+
+if [[ "$INSTALL_SERVICE" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo -e "${YELLOW}Installing systemd service...${NC}"
+
+    SERVICE_FILE="/etc/systemd/system/manny-threatintel.service"
+    CURRENT_USER="${SUDO_USER:-$USER}"
+
+    # Create service file
+    sudo bash -c "cat > ${SERVICE_FILE}" << SERVICEEOF
+[Unit]
+Description=Manny Threat Intel Server
+After=network.target
+
+[Service]
+Type=simple
+User=${CURRENT_USER}
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=/usr/bin/python3 ${INSTALL_DIR}/server.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+
+    # Enable and start service
+    sudo systemctl daemon-reload
+    sudo systemctl enable manny-threatintel.service
+    sudo systemctl start manny-threatintel.service
+
+    echo -e "${GREEN}  ✓ Service installed and started${NC}"
+    SERVICE_INSTALLED=true
+else
+    SERVICE_INSTALLED=false
+fi
+
 echo ""
 echo -e "${GREEN}=================================================="
 echo "       Installation Complete!"
 echo "==================================================${NC}"
 echo ""
-echo -e "  ${BLUE}To start the server:${NC}"
-echo "    cd ${INSTALL_DIR}"
-echo "    ./start.sh"
+
+if [ "$SERVICE_INSTALLED" = true ]; then
+    echo -e "  ${GREEN}✓ Service installed - Server will auto-start on boot${NC}"
+    echo ""
+    echo -e "  ${BLUE}Service commands:${NC}"
+    echo "    sudo systemctl status manny-threatintel   # Check status"
+    echo "    sudo systemctl restart manny-threatintel  # Restart"
+    echo "    sudo systemctl stop manny-threatintel     # Stop"
+    echo "    sudo journalctl -u manny-threatintel -f   # View logs"
+else
+    echo -e "  ${BLUE}To start the server manually:${NC}"
+    echo "    cd ${INSTALL_DIR}"
+    echo "    ./start.sh"
+    echo ""
+    echo -e "  ${BLUE}To install as service later:${NC}"
+    echo "    sudo ./install-service.sh"
+fi
+
 echo ""
 echo -e "  ${BLUE}Access the application:${NC}"
 echo "    Local:   http://localhost:3000"
