@@ -169,34 +169,69 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
         story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor('#00d4ff')))
         story.append(Spacer(1, 15))
 
-        # Analysis type and file info
+        # Analysis type and target info
         file_type = analysis_result.get('type', 'Unknown')
         filename = analysis_result.get('filename', 'N/A')
 
-        story.append(Paragraph("File Information", heading_style))
-        file_info = [
-            ['Type:', file_type.upper()],
-            ['Filename:', filename],
-        ]
+        # Determine if this is IP, URL, Hash, or File analysis
+        is_ip_analysis = file_type == 'ip' or analysis_result.get('ip') or (analysis_result.get('basic') and analysis_result.get('threat'))
+        is_url_analysis = file_type == 'url' or analysis_result.get('url') and not analysis_result.get('filename')
+        is_hash_analysis = file_type == 'hash' or (analysis_result.get('hash') and analysis_result.get('sources'))
 
-        if analysis_result.get('documentType'):
-            file_info.append(['Document Type:', analysis_result['documentType']])
+        # Target Information Section
+        story.append(Paragraph("Target Information", heading_style))
 
-        file_table = Table(file_info, colWidths=[1.5*inch, 5*inch])
-        file_table.setStyle(TableStyle([
+        if is_ip_analysis:
+            ip_addr = analysis_result.get('ip', analysis_result.get('basic', {}).get('ip', 'N/A'))
+            target_info = [['Analysis Type:', 'IP ADDRESS INVESTIGATION'], ['Target IP:', ip_addr]]
+            basic = analysis_result.get('basic', {})
+            if basic.get('location', {}).get('country'):
+                target_info.append(['Country:', f"{basic['location'].get('country', '')} ({basic['location'].get('countryCode', '')})"])
+            if basic.get('network', {}).get('isp'):
+                target_info.append(['ISP:', basic['network']['isp']])
+        elif is_url_analysis:
+            url = analysis_result.get('url', 'N/A')
+            target_info = [['Analysis Type:', 'URL THREAT ANALYSIS'], ['Target URL:', url[:70] + '...' if len(url) > 70 else url]]
+            if analysis_result.get('finalUrl') and analysis_result.get('finalUrl') != url:
+                target_info.append(['Final URL:', analysis_result['finalUrl'][:70]])
+        elif is_hash_analysis:
+            hash_val = analysis_result.get('hash', 'N/A')
+            target_info = [['Analysis Type:', 'FILE HASH LOOKUP'], ['Hash:', hash_val]]
+            sources = analysis_result.get('sources', {})
+            if sources.get('virustotal', {}).get('fileName'):
+                target_info.append(['File Name:', sources['virustotal']['fileName']])
+            if sources.get('virustotal', {}).get('fileType'):
+                target_info.append(['File Type:', sources['virustotal']['fileType']])
+        else:
+            target_info = [['Analysis Type:', file_type.upper()], ['Filename:', filename]]
+            if analysis_result.get('documentType'):
+                target_info.append(['Document Type:', analysis_result['documentType']])
+
+        target_table = Table(target_info, colWidths=[1.5*inch, 5*inch])
+        target_table.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 10),
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('TEXTCOLOR', (1, 0), (1, 0), colors.HexColor('#00d4ff')),
         ]))
-        story.append(file_table)
+        story.append(target_table)
         story.append(Spacer(1, 15))
 
-        # Risk Assessment
+        # Risk Assessment - Get score from various result structures
         story.append(Paragraph("Risk Assessment", heading_style))
 
+        # Try to get risk score from different locations
         risk_score = analysis_result.get('riskScore', 0)
         risk_level = analysis_result.get('riskLevel', 'Unknown')
+
+        # Check nested structures for IP/URL/Hash results
+        if not risk_score:
+            summary = analysis_result.get('summary', {}) or analysis_result.get('threat', {}).get('summary', {})
+            risk_score = summary.get('riskScore', 0)
+            risk_level = summary.get('riskLevel', risk_level)
+            if summary.get('isMalicious'):
+                risk_level = 'Critical' if risk_score >= 70 else 'High'
 
         # Color code risk level
         risk_color = colors.green
@@ -205,9 +240,14 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
         elif risk_score >= 40:
             risk_color = colors.orange
 
+        # Determine malicious status
+        is_malicious = analysis_result.get('summary', {}).get('isMalicious', False) or \
+                       analysis_result.get('threat', {}).get('summary', {}).get('isMalicious', False)
+
         risk_data = [
             ['Risk Score:', f"{risk_score}/100"],
             ['Risk Level:', risk_level],
+            ['Status:', 'MALICIOUS' if is_malicious else 'CLEAN'],
         ]
 
         risk_table = Table(risk_data, colWidths=[1.5*inch, 5*inch])
@@ -216,11 +256,310 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
             ('FONTSIZE', (0, 0), (-1, -1), 12),
             ('TEXTCOLOR', (1, 0), (1, 0), risk_color),
             ('TEXTCOLOR', (1, 1), (1, 1), risk_color),
+            ('TEXTCOLOR', (1, 2), (1, 2), colors.red if is_malicious else colors.green),
             ('FONTNAME', (1, 0), (1, -1), 'Helvetica-Bold'),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
         ]))
         story.append(risk_table)
         story.append(Spacer(1, 15))
+
+        # ============ IP ADDRESS ANALYSIS SECTION ============
+        if is_ip_analysis:
+            basic = analysis_result.get('basic', {})
+            threat = analysis_result.get('threat', {})
+            sources = threat.get('sources', {}) or analysis_result.get('sources', {})
+
+            # Location Information
+            location = basic.get('location', {})
+            if location:
+                story.append(Paragraph("📍 Location Information", heading_style))
+                loc_data = []
+                if location.get('country'):
+                    loc_data.append(['Country:', f"{location.get('country')} ({location.get('countryCode', '')})"])
+                if location.get('city'):
+                    loc_data.append(['City:', location['city']])
+                if location.get('region'):
+                    loc_data.append(['Region:', location['region']])
+                if location.get('timezone'):
+                    loc_data.append(['Timezone:', location['timezone']])
+
+                if loc_data:
+                    loc_table = Table(loc_data, colWidths=[1.5*inch, 5*inch])
+                    loc_table.setStyle(TableStyle([
+                        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, -1), 10),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                    ]))
+                    story.append(loc_table)
+                    story.append(Spacer(1, 10))
+
+            # Network Information
+            network = basic.get('network', {})
+            if network:
+                story.append(Paragraph("🌐 Network Information", heading_style))
+                net_data = []
+                if network.get('isp'):
+                    net_data.append(['ISP:', network['isp']])
+                if network.get('asn'):
+                    net_data.append(['ASN:', network['asn']])
+                if network.get('org'):
+                    net_data.append(['Organization:', network['org']])
+                if basic.get('domain'):
+                    net_data.append(['Domain:', basic['domain']])
+
+                if net_data:
+                    net_table = Table(net_data, colWidths=[1.5*inch, 5*inch])
+                    net_table.setStyle(TableStyle([
+                        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, -1), 10),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                    ]))
+                    story.append(net_table)
+                    story.append(Spacer(1, 10))
+
+            # Security Flags
+            security = basic.get('security', {})
+            ipqs = sources.get('ipqualityscore', {})
+            abuseipdb = sources.get('abuseipdb', {})
+
+            flags = []
+            if ipqs.get('isVpn') or security.get('isVpn'):
+                flags.append('VPN')
+            if ipqs.get('isProxy') or security.get('isProxy'):
+                flags.append('Proxy')
+            if ipqs.get('isTor') or abuseipdb.get('isTor'):
+                flags.append('Tor Exit Node')
+            if ipqs.get('isBot'):
+                flags.append('Bot')
+            if security.get('isHosting'):
+                flags.append('Hosting Provider')
+            if ipqs.get('isCrawler'):
+                flags.append('Crawler')
+
+            if flags:
+                story.append(Paragraph("⚠️ Security Flags Detected", heading_style))
+                for flag in flags:
+                    story.append(Paragraph(f"  • {flag}", body_style))
+                story.append(Spacer(1, 10))
+
+            # VirusTotal Results
+            vt = sources.get('virustotal', {})
+            if vt:
+                story.append(Paragraph("🛡️ VirusTotal Analysis", heading_style))
+                vt_data = [
+                    ['Malicious:', str(vt.get('malicious', 0))],
+                    ['Suspicious:', str(vt.get('suspicious', 0))],
+                    ['Clean:', str(vt.get('harmless', 0))],
+                    ['Undetected:', str(vt.get('undetected', 0))],
+                ]
+                if vt.get('asOwner'):
+                    vt_data.append(['AS Owner:', vt['asOwner']])
+                if vt.get('reputation') is not None:
+                    vt_data.append(['Reputation:', str(vt['reputation'])])
+
+                vt_table = Table(vt_data, colWidths=[1.5*inch, 5*inch])
+                vt_table.setStyle(TableStyle([
+                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 10),
+                    ('TEXTCOLOR', (1, 0), (1, 0), colors.red if vt.get('malicious', 0) > 0 else colors.green),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ]))
+                story.append(vt_table)
+                story.append(Spacer(1, 10))
+
+            # AbuseIPDB Results
+            if abuseipdb:
+                story.append(Paragraph("🚨 AbuseIPDB Analysis", heading_style))
+                abuse_data = [
+                    ['Abuse Score:', f"{abuseipdb.get('abuseScore', 0)}%"],
+                    ['Total Reports:', str(abuseipdb.get('totalReports', 0))],
+                ]
+                if abuseipdb.get('usageType'):
+                    abuse_data.append(['Usage Type:', abuseipdb['usageType']])
+                if abuseipdb.get('isWhitelisted'):
+                    abuse_data.append(['Status:', 'WHITELISTED'])
+
+                abuse_score = abuseipdb.get('abuseScore', 0)
+                abuse_color = colors.red if abuse_score > 50 else (colors.orange if abuse_score > 20 else colors.green)
+
+                abuse_table = Table(abuse_data, colWidths=[1.5*inch, 5*inch])
+                abuse_table.setStyle(TableStyle([
+                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 10),
+                    ('TEXTCOLOR', (1, 0), (1, 0), abuse_color),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ]))
+                story.append(abuse_table)
+                story.append(Spacer(1, 10))
+
+            # IPQualityScore
+            if ipqs and ipqs.get('fraudScore') is not None:
+                story.append(Paragraph("🎯 Fraud Analysis (IPQualityScore)", heading_style))
+                fraud_score = ipqs.get('fraudScore', 0)
+                fraud_color = colors.red if fraud_score > 75 else (colors.orange if fraud_score > 50 else colors.green)
+                story.append(Paragraph(f"<b>Fraud Score:</b> <font color='{fraud_color}'>{fraud_score}</font>", body_style))
+                story.append(Spacer(1, 10))
+
+            # Shodan Infrastructure
+            shodan = sources.get('shodan', {})
+            if shodan:
+                story.append(Paragraph("🖥️ Infrastructure (Shodan)", heading_style))
+
+                if shodan.get('hostnames'):
+                    story.append(Paragraph(f"<b>Hostnames:</b> {', '.join(shodan['hostnames'][:5])}", body_style))
+                if shodan.get('ports'):
+                    story.append(Paragraph(f"<b>Open Ports:</b> {', '.join(map(str, shodan['ports'][:10]))}", body_style))
+                if shodan.get('vulns'):
+                    story.append(Paragraph(f"<font color='red'><b>Vulnerabilities:</b> {', '.join(shodan['vulns'][:5])}</font>", body_style))
+                story.append(Spacer(1, 10))
+
+            # ThreatFox
+            threatfox = sources.get('threatfox', {})
+            if threatfox and threatfox.get('found'):
+                story.append(Paragraph("🦊 ThreatFox - Known Malware", heading_style))
+                story.append(Paragraph(f"<font color='red'><b>MALWARE DETECTED: {threatfox.get('malwareFamily', 'Unknown')}</b></font>", body_style))
+                story.append(Spacer(1, 10))
+
+            # AlienVault OTX
+            otx = sources.get('alienvault_otx', {})
+            if otx:
+                story.append(Paragraph("👽 AlienVault OTX Intelligence", heading_style))
+                story.append(Paragraph(f"<b>Threat Pulses:</b> {otx.get('pulseCount', 0)}", body_style))
+                if otx.get('reputation'):
+                    story.append(Paragraph(f"<b>Reputation:</b> {otx['reputation']}", body_style))
+                story.append(Spacer(1, 10))
+
+        # ============ URL ANALYSIS SECTION ============
+        elif is_url_analysis:
+            sources = analysis_result.get('sources', {})
+            summary = analysis_result.get('summary', {})
+
+            # VirusTotal URL Results
+            vt = sources.get('virustotal', {})
+            if vt:
+                story.append(Paragraph("🛡️ VirusTotal URL Analysis", heading_style))
+                vt_data = [
+                    ['Malicious:', str(vt.get('malicious', 0))],
+                    ['Suspicious:', str(vt.get('suspicious', 0))],
+                    ['Clean:', str(vt.get('harmless', 0))],
+                    ['Undetected:', str(vt.get('undetected', 0))],
+                ]
+
+                vt_table = Table(vt_data, colWidths=[1.5*inch, 5*inch])
+                vt_table.setStyle(TableStyle([
+                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 10),
+                    ('TEXTCOLOR', (1, 0), (1, 0), colors.red if vt.get('malicious', 0) > 0 else colors.green),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ]))
+                story.append(vt_table)
+
+                # Categories
+                if vt.get('categories'):
+                    cats = list(vt['categories'].values()) if isinstance(vt['categories'], dict) else vt['categories']
+                    story.append(Paragraph(f"<b>Categories:</b> {', '.join(cats[:5])}", body_style))
+                story.append(Spacer(1, 10))
+
+            # URLhaus
+            urlhaus = sources.get('urlhaus', {})
+            if urlhaus and (urlhaus.get('found') or urlhaus.get('threat')):
+                story.append(Paragraph("🔴 URLhaus - Known Malicious URL", heading_style))
+                story.append(Paragraph(f"<font color='red'><b>Threat Type:</b> {urlhaus.get('threat', 'Malware')}</font>", body_style))
+                if urlhaus.get('urlStatus'):
+                    story.append(Paragraph(f"<b>Status:</b> {urlhaus['urlStatus']}", body_style))
+                if urlhaus.get('tags'):
+                    story.append(Paragraph(f"<b>Tags:</b> {', '.join(urlhaus['tags'])}", body_style))
+                story.append(Spacer(1, 10))
+
+            # AlienVault OTX
+            otx = sources.get('alienvault_otx', {})
+            if otx:
+                story.append(Paragraph("👽 AlienVault OTX Intelligence", heading_style))
+                story.append(Paragraph(f"<b>Threat Reports:</b> {otx.get('pulseCount', 0)}", body_style))
+                if otx.get('domain'):
+                    story.append(Paragraph(f"<b>Domain:</b> {otx['domain']}", body_style))
+
+                # Validation messages
+                if otx.get('validation'):
+                    for v in otx['validation'][:3]:
+                        msg_color = 'green' if v.get('source') in ['whitelist', 'akamai', 'majestic'] else 'orange'
+                        story.append(Paragraph(f"<font color='{msg_color}'>{v.get('message', '')}</font>", body_style))
+
+                # Related pulses
+                if otx.get('pulses'):
+                    story.append(Paragraph("<b>Related Threat Reports:</b>", body_style))
+                    for pulse in otx['pulses'][:3]:
+                        story.append(Paragraph(f"  • {pulse.get('name', 'Unknown')}", body_style))
+                story.append(Spacer(1, 10))
+
+        # ============ HASH ANALYSIS SECTION ============
+        elif is_hash_analysis:
+            sources = analysis_result.get('sources', {})
+            summary = analysis_result.get('summary', {})
+
+            # VirusTotal Hash Results
+            vt = sources.get('virustotal', {})
+            if vt:
+                story.append(Paragraph("🛡️ VirusTotal File Analysis", heading_style))
+                vt_data = [
+                    ['Malicious:', str(vt.get('malicious', 0))],
+                    ['Suspicious:', str(vt.get('suspicious', 0))],
+                    ['Clean:', str(vt.get('harmless', 0))],
+                    ['Undetected:', str(vt.get('undetected', 0))],
+                ]
+
+                vt_table = Table(vt_data, colWidths=[1.5*inch, 5*inch])
+                vt_table.setStyle(TableStyle([
+                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 10),
+                    ('TEXTCOLOR', (1, 0), (1, 0), colors.red if vt.get('malicious', 0) > 0 else colors.green),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ]))
+                story.append(vt_table)
+
+                # File details
+                if vt.get('fileName'):
+                    story.append(Paragraph(f"<b>File Name:</b> {vt['fileName']}", body_style))
+                if vt.get('fileSize'):
+                    story.append(Paragraph(f"<b>File Size:</b> {vt['fileSize']:,} bytes", body_style))
+                if vt.get('fileType'):
+                    story.append(Paragraph(f"<b>File Type:</b> {vt['fileType']}", body_style))
+                if vt.get('tags'):
+                    story.append(Paragraph(f"<b>Tags:</b> {', '.join(vt['tags'][:10])}", body_style))
+                story.append(Spacer(1, 10))
+
+            # MalwareBazaar
+            mb = sources.get('malwarebazaar', {})
+            if mb and mb.get('found'):
+                story.append(Paragraph("🔴 MalwareBazaar - Known Malware", heading_style))
+                if mb.get('signature'):
+                    story.append(Paragraph(f"<font color='red'><b>Signature:</b> {mb['signature']}</font>", body_style))
+                if mb.get('fileType'):
+                    story.append(Paragraph(f"<b>File Type:</b> {mb['fileType']}", body_style))
+                if mb.get('firstSeen'):
+                    story.append(Paragraph(f"<b>First Seen:</b> {mb['firstSeen']}", body_style))
+                if mb.get('tags'):
+                    story.append(Paragraph(f"<b>Tags:</b> {', '.join(mb['tags'])}", body_style))
+                story.append(Spacer(1, 10))
+
+            # AlienVault OTX
+            otx = sources.get('alienvault_otx', {})
+            if otx:
+                story.append(Paragraph("👽 AlienVault OTX Intelligence", heading_style))
+                story.append(Paragraph(f"<b>Threat Reports:</b> {otx.get('pulseCount', 0)}", body_style))
+                if otx.get('fileType'):
+                    story.append(Paragraph(f"<b>File Type:</b> {otx['fileType']}", body_style))
+                if otx.get('fileSize'):
+                    story.append(Paragraph(f"<b>File Size:</b> {otx['fileSize']:,} bytes", body_style))
+
+                # Related pulses
+                if otx.get('pulses'):
+                    story.append(Paragraph("<b>Related Threat Pulses:</b>", body_style))
+                    for pulse in otx['pulses'][:5]:
+                        story.append(Paragraph(f"  • {pulse.get('name', 'Unknown')}", body_style))
+                        if pulse.get('tags'):
+                            story.append(Paragraph(f"    Tags: {', '.join(pulse['tags'][:5])}", body_style))
+                story.append(Spacer(1, 10))
 
         # Email-specific sections
         if file_type == 'email':

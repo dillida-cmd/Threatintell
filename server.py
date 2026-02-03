@@ -3115,9 +3115,19 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                 'filename': raw_result.get('originalFilename'),
                 'riskScore': raw_result.get('riskScore'),
                 'riskLevel': raw_result.get('riskLevel'),
+                'type': raw_result.get('fileType', raw_result.get('type', 'unknown')),
+                'storedAt': raw_result.get('storedAt'),
+                'expiresAt': raw_result.get('expiresAt'),
             }
+            # Merge in the nested results while preserving top-level keys
             if raw_result.get('results'):
-                analysis_result.update(raw_result['results'])
+                results_data = raw_result['results']
+                # Don't overwrite type if already set from fileType
+                if 'type' in results_data and not analysis_result.get('type'):
+                    analysis_result['type'] = results_data['type']
+                for key, value in results_data.items():
+                    if key not in analysis_result or not analysis_result[key]:
+                        analysis_result[key] = value
 
             # Optional: capture screenshots for URLs in the result
             include_screenshots = data.get('includeScreenshots', False)
