@@ -16,6 +16,8 @@ A comprehensive threat intelligence platform for security analysts and researche
 - **PDF Analysis** - Detect malicious JavaScript, embedded files, auto-open actions, and suspicious URLs in PDF documents
 - **Office Document Analysis** - Detect VBA macros, external references, remote templates, and malicious payloads in Word/Excel/PowerPoint files
 - **QR Code Detection** - Automatically detect and decode QR codes embedded in analyzed files
+- **URL Screenshots** - Capture screenshots of suspicious URLs using headless browsers (Chromium, Firefox, or Puppeteer)
+- **Encrypted PDF Export** - Export analysis results to password-protected PDF reports using the same secret key used during upload
 
 ### SIEM/Sentinel Integration
 
@@ -288,6 +290,50 @@ curl "http://localhost:3000/api/ioc/export/hashes"
 | `/api/analyze/office` | POST | Analyze Office document |
 | `/api/results/<ref>` | POST | Retrieve analysis results |
 
+### URL Screenshots
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/screenshot/status` | GET | Get screenshot service status and available tools |
+| `/api/screenshot/url` | POST | Capture screenshot of a URL |
+
+**Screenshot Request Body:**
+```json
+{
+  "url": "https://example.com",
+  "width": 1280,
+  "height": 720,
+  "timeout": 30,
+  "userAgent": "chrome_windows"
+}
+```
+
+**Supported Browsers:** Chromium, Firefox, Puppeteer, Playwright, wkhtmltoimage
+
+### PDF Export
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/export/pdf/status` | GET | Get PDF export service status |
+| `/api/export/pdf` | POST | Export analysis results to encrypted PDF |
+
+**PDF Export Request Body:**
+```json
+{
+  "entryRef": "MSB0050",
+  "secretKey": "your-secret-key",
+  "includeScreenshots": false
+}
+```
+
+**Example:**
+```bash
+# Export analysis to encrypted PDF
+curl -X POST http://localhost:3000/api/export/pdf \
+  -H "Content-Type: application/json" \
+  -d '{"entryRef":"MSB0050","secretKey":"your-secret-key"}'
+```
+
 ## Database Schema
 
 ### IOC Tables
@@ -332,6 +378,8 @@ Upload as lookup table or use Threat Intelligence Framework.
 Threatintell/
 ├── server.py                 # Main Python backend
 ├── threat_intel.py           # Threat intelligence module
+├── screenshot_service.py     # URL screenshot capture service
+├── pdf_export.py             # Encrypted PDF export service
 ├── requirements.txt          # Python dependencies
 ├── install.sh                # Interactive installer
 ├── install-service.sh        # Standalone service installer
@@ -347,6 +395,10 @@ Threatintell/
 ├── .env                      # Environment config (generated, not in git)
 ├── config.py                 # Python config (generated, not in git)
 ├── .encryption_key           # Encryption key (generated, not in git)
+│
+├── screenshots/              # Captured URL screenshots
+├── exports/                  # Exported PDF reports
+├── test_samples/             # Test files for sandbox validation
 │
 └── frontend/                 # React frontend
     ├── src/
@@ -365,6 +417,25 @@ Threatintell/
 - **Config Files**: `.env` and `config.py` contain sensitive settings
 - **Git Exclusions**: All sensitive files are in `.gitignore`
 - **File Analysis**: Performed locally, files are not uploaded to external services
+
+## Screenshot Service Setup
+
+The URL screenshot feature requires at least one of the following tools:
+
+| Tool | Installation | Recommended |
+|------|--------------|-------------|
+| **Chromium** | `apt install chromium` | Yes |
+| **Puppeteer** | `npm install -g puppeteer` | Yes |
+| **Playwright** | `npm install -g playwright` | Yes |
+| **wkhtmltoimage** | `apt install wkhtmltopdf` | Alternative |
+| **Firefox** | Pre-installed | Has limitations with snap version |
+
+Check available tools:
+```bash
+curl http://localhost:3000/api/screenshot/status
+```
+
+**Note:** Firefox installed via snap may have issues with headless mode when another Firefox instance is running. Chromium or Puppeteer are recommended for reliable screenshots.
 
 ## Troubleshooting
 

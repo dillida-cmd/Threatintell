@@ -1021,7 +1021,7 @@ class URLAnalyzer:
         return result
 
     def analyze_browser(self, url: str, capture_screenshot: bool = True) -> Dict:
-        """Full browser analysis with JS execution"""
+        """Full browser analysis with JS execution and step-by-step screenshots"""
         result = {
             'sessionId': self.session_id,
             'url': url,
@@ -1029,7 +1029,9 @@ class URLAnalyzer:
             'finalUrl': None,
             'pageTitle': None,
             'screenshot': None,
+            'screenshots': [],  # Screenshots for each redirect step
             'screenshotPath': None,
+            'redirectChain': [],
             'networkRequests': [],
             'formFields': [],
             'downloads': [],
@@ -1047,55 +1049,89 @@ class URLAnalyzer:
 
         chromium_path = caps['chromium']['path']
 
+        # First, get the redirect chain using HTTP analysis
+        http_result = self.analyze_http(url)
+        result['redirectChain'] = http_result.get('redirectChain', [])
+
+        # Build list of URLs to screenshot (original + all redirects + final)
+        urls_to_capture = [url]
+        for redirect in result['redirectChain']:
+            if redirect.get('redirectTo'):
+                urls_to_capture.append(redirect['redirectTo'])
+
+        # Add final URL if different
+        if http_result.get('finalUrl') and http_result['finalUrl'] not in urls_to_capture:
+            urls_to_capture.append(http_result['finalUrl'])
+
+        result['finalUrl'] = http_result.get('finalUrl', url)
+
+        # Capture screenshot for each URL in the chain
+        screenshots = []
+        profile_dir = None
+
         try:
-            # Create temporary directory for Chrome profile
             profile_dir = tempfile.mkdtemp(prefix='sandbox_chrome_')
-            screenshot_path = os.path.join(self.session_dir, 'screenshot.png')
 
-            # Build Chrome command
-            chrome_args = [
-                chromium_path,
-                '--headless',
-                '--disable-gpu',
-                '--no-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-web-security',
-                '--disable-features=IsolateOrigins,site-per-process',
-                '--window-size=1920,1080',
-                '--hide-scrollbars',
-                f'--user-data-dir={profile_dir}',
-                f'--screenshot={screenshot_path}',
-                '--virtual-time-budget=5000',  # 5 second JS execution budget
-                url
-            ]
+            for i, capture_url in enumerate(urls_to_capture[:10]):  # Limit to 10 URLs
+                screenshot_path = os.path.join(self.session_dir, f'screenshot_{i}.png')
 
-            proc = subprocess.run(
-                chrome_args,
-                capture_output=True,
-                timeout=self.timeout,
-            )
+                # Build Chrome command
+                chrome_args = [
+                    chromium_path,
+                    '--headless',
+                    '--disable-gpu',
+                    '--no-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-web-security',
+                    '--disable-features=IsolateOrigins,site-per-process',
+                    '--window-size=1920,1080',
+                    '--hide-scrollbars',
+                    f'--user-data-dir={profile_dir}',
+                    f'--screenshot={screenshot_path}',
+                    '--virtual-time-budget=10000',  # 10 second JS execution budget
+                    capture_url
+                ]
 
-            # Check screenshot
-            if os.path.exists(screenshot_path) and os.path.getsize(screenshot_path) > 0:
-                result['screenshotPath'] = screenshot_path
-                if capture_screenshot:
-                    with open(screenshot_path, 'rb') as f:
-                        result['screenshot'] = base64.b64encode(f.read()).decode('utf-8')
+                try:
+                    proc = subprocess.run(
+                        chrome_args,
+                        capture_output=True,
+                        timeout=30,  # 30 sec per URL
+                    )
 
-            # Extract any output
-            stdout = proc.stdout.decode('utf-8', errors='replace')
-            stderr = proc.stderr.decode('utf-8', errors='replace')
-            self.ioc_collector.extract_from_text(stdout + stderr)
+                    # Check screenshot
+                    if os.path.exists(screenshot_path) and os.path.getsize(screenshot_path) > 0:
+                        with open(screenshot_path, 'rb') as f:
+                            screenshot_b64 = base64.b64encode(f.read()).decode('utf-8')
+                            screenshots.append(screenshot_b64)
 
-        except subprocess.TimeoutExpired:
-            result['error'] = 'Browser analysis timed out'
+                            # Update redirect chain with screenshot info
+                            if i > 0 and i - 1 < len(result['redirectChain']):
+                                result['redirectChain'][i - 1]['screenshot'] = screenshot_b64
+
+                    # Extract IOCs from output
+                    stdout = proc.stdout.decode('utf-8', errors='replace')
+                    stderr = proc.stderr.decode('utf-8', errors='replace')
+                    self.ioc_collector.extract_from_text(stdout + stderr)
+
+                except subprocess.TimeoutExpired:
+                    print(f"[URL Analysis] Screenshot timeout for {capture_url}")
+                except Exception as e:
+                    print(f"[URL Analysis] Screenshot error for {capture_url}: {e}")
+
+            # Final screenshot is the last one captured
+            if screenshots:
+                result['screenshot'] = screenshots[-1]
+                result['screenshots'] = screenshots
+
         except Exception as e:
             result['status'] = 'error'
             result['error'] = str(e)
         finally:
             # Cleanup
             try:
-                shutil.rmtree(profile_dir)
+                if profile_dir and os.path.exists(profile_dir):
+                    shutil.rmtree(profile_dir)
             except Exception:
                 pass
 
