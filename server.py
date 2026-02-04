@@ -52,7 +52,7 @@ except ImportError:
     print("[Warning] sandbox_service module not available")
 
 PORT = 3000
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_FILE_SIZE = 15 * 1024 * 1024  # 15MB
 DATABASE_FILE = os.path.join(os.path.dirname(__file__), 'analysis_results.db')
 MASTER_KEY_FILE = os.path.join(os.path.dirname(__file__), '.msb_master_key')
 KEY_SALT_FILE = os.path.join(os.path.dirname(__file__), '.msb_key_salt')
@@ -3526,7 +3526,7 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             # Check content length
             content_length = int(self.headers.get('Content-Length', 0))
             if content_length > MAX_FILE_SIZE:
-                self.send_json({'error': 'File too large. Maximum size is 10MB.'}, 413)
+                self.send_json({'error': 'File too large. Maximum size is 15MB.'}, 413)
                 return
 
             if content_length == 0:

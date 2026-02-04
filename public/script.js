@@ -26,9 +26,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // File inputs and upload zones
   const uploadConfigs = [
-    { type: 'email', extensions: ['.eml'], maxSize: 10 * 1024 * 1024 },
-    { type: 'pdf', extensions: ['.pdf'], maxSize: 10 * 1024 * 1024 },
-    { type: 'office', extensions: ['.doc', '.docx', '.docm', '.xls', '.xlsx', '.xlsm', '.ppt', '.pptx', '.pptm'], maxSize: 10 * 1024 * 1024 }
+    { type: 'email', extensions: ['.eml'], maxSize: 15 * 1024 * 1024 },
+    { type: 'pdf', extensions: ['.pdf'], maxSize: 15 * 1024 * 1024 },
+    { type: 'office', extensions: ['.doc', '.docx', '.docm', '.xls', '.xlsx', '.xlsm', '.ppt', '.pptx', '.pptm'], maxSize: 15 * 1024 * 1024 }
   ];
 
   // Store selected files
