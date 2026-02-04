@@ -906,41 +906,101 @@ def enrich_domain(domain):
 # ============================================================================
 
 def decode_qr_codes(image_data):
-    """Decode QR codes from image data"""
+    """Decode QR codes from image data with enhanced preprocessing for better detection"""
     results = []
+    seen_data = set()
 
     try:
         from pyzbar import pyzbar
-        from PIL import Image
+        from PIL import Image, ImageEnhance, ImageFilter
 
         # Try to open the image
         image = Image.open(io.BytesIO(image_data))
 
-        # Convert to RGB if necessary (pyzbar works better with RGB)
-        if image.mode not in ('RGB', 'L'):
-            image = image.convert('RGB')
+        # Store original size for scaling attempts
+        original_size = image.size
 
-        # Decode QR codes
-        decoded_objects = pyzbar.decode(image)
+        # Create list of image variants to try
+        image_variants = []
 
-        for obj in decoded_objects:
-            if obj.type in ('QRCODE', 'AZTEC', 'DATAMATRIX'):
-                data = obj.data.decode('utf-8', errors='ignore')
-                qr_info = analyze_qr_data(data)
-                qr_info['raw_data'] = data[:500]  # Limit raw data length
-                qr_info['type'] = obj.type
-                qr_info['rect'] = {
-                    'left': obj.rect.left,
-                    'top': obj.rect.top,
-                    'width': obj.rect.width,
-                    'height': obj.rect.height
-                }
-                results.append(qr_info)
+        # Variant 1: Original converted to RGB
+        img_rgb = image.convert('RGB') if image.mode not in ('RGB', 'L') else image
+        image_variants.append(('original', img_rgb))
+
+        # Variant 2: Grayscale
+        img_gray = image.convert('L')
+        image_variants.append(('grayscale', img_gray))
+
+        # Variant 3: Enhanced contrast
+        try:
+            enhancer = ImageEnhance.Contrast(img_gray)
+            img_contrast = enhancer.enhance(2.0)
+            image_variants.append(('high_contrast', img_contrast))
+        except Exception:
+            pass
+
+        # Variant 4: Sharpened
+        try:
+            img_sharp = img_gray.filter(ImageFilter.SHARPEN)
+            image_variants.append(('sharpened', img_sharp))
+        except Exception:
+            pass
+
+        # Variant 5: Scaled up (helps with small QR codes)
+        if original_size[0] < 500 or original_size[1] < 500:
+            try:
+                scale_factor = max(500 / original_size[0], 500 / original_size[1])
+                new_size = (int(original_size[0] * scale_factor), int(original_size[1] * scale_factor))
+                img_scaled = img_gray.resize(new_size, Image.Resampling.LANCZOS)
+                image_variants.append(('scaled_up', img_scaled))
+            except Exception:
+                pass
+
+        # Variant 6: Thresholded (binarized) - helps with poor contrast
+        try:
+            threshold = 128
+            img_thresh = img_gray.point(lambda p: 255 if p > threshold else 0)
+            image_variants.append(('threshold', img_thresh))
+        except Exception:
+            pass
+
+        # Try decoding each variant
+        for variant_name, img_variant in image_variants:
+            try:
+                decoded_objects = pyzbar.decode(img_variant)
+
+                for obj in decoded_objects:
+                    # Accept QR codes and similar 2D codes
+                    if obj.type in ('QRCODE', 'PDF417', 'SQCODE'):
+                        data = obj.data.decode('utf-8', errors='ignore')
+
+                        # Skip duplicates
+                        if data in seen_data:
+                            continue
+                        seen_data.add(data)
+
+                        qr_info = analyze_qr_data(data)
+                        qr_info['raw_data'] = data[:500]
+                        qr_info['type'] = obj.type
+                        qr_info['rect'] = {
+                            'left': obj.rect.left,
+                            'top': obj.rect.top,
+                            'width': obj.rect.width,
+                            'height': obj.rect.height
+                        }
+                        qr_info['decode_method'] = variant_name
+                        results.append(qr_info)
+            except Exception:
+                continue
+
+            # If we found QR codes, no need to try more variants
+            if results:
+                break
 
     except ImportError:
-        pass  # pyzbar not installed
+        logging.warning("pyzbar not installed - QR code detection unavailable")
     except Exception as e:
-        pass  # Failed to decode
+        logging.warning(f"QR code decode error: {e}")
 
     return results
 
