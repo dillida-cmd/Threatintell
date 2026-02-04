@@ -1,0 +1,25 @@
+# ShieldTier Sandbox Audit Rules
+# Install: sudo cp audit-sandbox.rules /etc/audit/rules.d/sandbox.rules
+# Reload: sudo auditctl -R /etc/audit/rules.d/sandbox.rules
+
+# Monitor sandbox directory access
+-w /opt/shieldtier/app/sandbox -p rwxa -k shieldtier_sandbox
+
+# Monitor bwrap execution
+-w /usr/bin/bwrap -p x -k sandbox_bwrap
+
+# Monitor suspicious syscalls from sandbox sessions
+-a always,exit -F arch=b64 -S execve -F key=sandbox_exec
+-a always,exit -F arch=b64 -S connect -F key=sandbox_network
+-a always,exit -F arch=b64 -S ptrace -F key=sandbox_ptrace
+
+# Monitor attempts to access sensitive files
+-w /etc/passwd -p r -k sandbox_sensitive
+-w /etc/shadow -p r -k sandbox_sensitive
+-w /etc/sudoers -p r -k sandbox_sensitive
+
+# Monitor module loading attempts
+-a always,exit -F arch=b64 -S init_module -S finit_module -S delete_module -k sandbox_modules
+
+# Monitor mount attempts
+-a always,exit -F arch=b64 -S mount -S umount2 -k sandbox_mount

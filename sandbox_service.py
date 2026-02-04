@@ -435,6 +435,23 @@ class BubblewrapBackend:
             '--chdir', '/sandbox',
         ])
 
+        # Additional hardening - block access to sensitive kernel interfaces
+        args.extend([
+            '--proc', '/proc',           # Mount minimal /proc
+            '--dev', '/dev',             # Mount minimal /dev
+            '--tmpfs', '/sys',           # Block /sys access
+            '--hostname', 'sandbox',     # Isolated hostname
+            '--unsetenv', 'HOME',        # Clear sensitive env vars
+            '--unsetenv', 'USER',
+            '--unsetenv', 'LOGNAME',
+            '--setenv', 'PATH', '/usr/bin:/bin',  # Minimal PATH
+        ])
+
+        # Seccomp - block dangerous syscalls (if seccomp file exists)
+        seccomp_filter = os.path.join(os.path.dirname(__file__), 'sandbox_seccomp.json')
+        if os.path.exists(seccomp_filter):
+            args.extend(['--seccomp', '3', '3<' + seccomp_filter])
+
         if not allow_network:
             args.extend(['--unshare-net'])
 
@@ -490,8 +507,17 @@ class BubblewrapBackend:
 
         start_time = datetime.now()
         try:
-            # Use timeout wrapper
-            timeout_args = ['timeout', '--signal=KILL', str(self.timeout)] + bwrap_args
+            # Use timeout and prlimit wrappers for resource control
+            # Memory limit: 512MB, CPU time: timeout seconds, File size: 100MB
+            prlimit_args = [
+                'prlimit',
+                f'--as={MEMORY_LIMIT_MB * 1024 * 1024}',  # Virtual memory limit
+                f'--fsize={DISK_LIMIT_MB * 1024 * 1024}',  # Max file size
+                f'--nproc=50',  # Max processes
+                f'--nofile=256',  # Max open files
+                '--core=0',  # No core dumps
+            ]
+            timeout_args = ['timeout', '--signal=KILL', str(self.timeout)] + prlimit_args + bwrap_args
 
             proc = subprocess.run(
                 timeout_args,
@@ -550,7 +576,16 @@ class BubblewrapBackend:
 
         start_time = datetime.now()
         try:
-            timeout_args = ['timeout', '--signal=KILL', str(self.timeout)] + bwrap_args
+            # Use timeout and prlimit wrappers for resource control
+            prlimit_args = [
+                'prlimit',
+                f'--as={MEMORY_LIMIT_MB * 1024 * 1024}',  # Virtual memory limit
+                f'--fsize={DISK_LIMIT_MB * 1024 * 1024}',  # Max file size
+                f'--nproc=50',  # Max processes
+                f'--nofile=256',  # Max open files
+                '--core=0',  # No core dumps
+            ]
+            timeout_args = ['timeout', '--signal=KILL', str(self.timeout)] + prlimit_args + bwrap_args
 
             proc = subprocess.run(
                 timeout_args,
