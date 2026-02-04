@@ -3,7 +3,10 @@
 # ShieldTier Installation Script
 # Installs ShieldTier with Nginx reverse proxy for Cloudflare
 #
-# Usage: curl -sSL https://raw.githubusercontent.com/dillida-cmd/Threatintell/master/install.sh | sudo bash
+# Usage:
+#   curl -sSL https://raw.githubusercontent.com/dillida-cmd/Threatintell/master/install.sh | sudo bash -s -- your-domain.com
+#   OR
+#   sudo ./install.sh your-domain.com
 #
 
 set -e
@@ -39,10 +42,22 @@ fi
 
 echo -e "${GREEN}Detected OS: $OS${NC}"
 
-# Get domain name
-read -p "Enter your domain name (e.g., threat.example.com): " DOMAIN
+# Get domain name from argument or prompt
+DOMAIN="$1"
+if [ -z "$DOMAIN" ]; then
+    # Try to read interactively
+    if [ -t 0 ]; then
+        read -p "Enter your domain name (e.g., threat.example.com): " DOMAIN
+    fi
+fi
+
 if [ -z "$DOMAIN" ]; then
     echo -e "${RED}Domain name is required${NC}"
+    echo ""
+    echo "Usage:"
+    echo "  curl -sSL https://raw.githubusercontent.com/dillida-cmd/Threatintell/master/install.sh | sudo bash -s -- your-domain.com"
+    echo "  OR"
+    echo "  sudo ./install.sh your-domain.com"
     exit 1
 fi
 
