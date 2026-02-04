@@ -10,7 +10,7 @@ A comprehensive threat intelligence platform for security analysts and researche
 - **URL Investigation** - Analyze URLs for malicious content, phishing indicators, and known malware distribution
 - **Hash Investigation** - Look up file hashes to identify known malware, get AV detection rates, and find associated threat campaigns
 
-### File Analysis Sandbox
+### File Analysis (Static)
 
 - **Email Analysis** - Parse .eml/.msg files to extract headers, attachments, embedded URLs, and detect phishing indicators
 - **PDF Analysis** - Detect malicious JavaScript, embedded files, auto-open actions, and suspicious URLs in PDF documents
@@ -18,6 +18,17 @@ A comprehensive threat intelligence platform for security analysts and researche
 - **QR Code Detection** - Automatically detect and decode QR codes embedded in analyzed files
 - **URL Screenshots** - Capture screenshots of suspicious URLs using headless browsers (Chromium, Firefox, or Puppeteer)
 - **Encrypted PDF Export** - Export analysis results to password-protected PDF reports using the same secret key used during upload
+
+### Sandbox Analysis (Dynamic Execution)
+
+Analyze suspicious files in a hardened, isolated environment:
+
+- **Script Execution** - Safely run .sh, .py, .js, .php, .ps1, .bat scripts in sandbox
+- **Windows Executable Analysis** - Run .exe files using Wine in isolated environment
+- **Office Macro Execution** - Execute and monitor Office macros via LibreOffice
+- **URL Behavior Analysis** - Load URLs in sandboxed Chromium to capture behavior
+- **IOC Extraction** - Automatically extract IPs, URLs, domains, hashes from execution
+- **Syscall Tracing** - Monitor all system calls made by malicious files
 
 ### SIEM/Sentinel Integration
 
@@ -417,6 +428,186 @@ Threatintell/
 - **Config Files**: `.env` and `config.py` contain sensitive settings
 - **Git Exclusions**: All sensitive files are in `.gitignore`
 - **File Analysis**: Performed locally, files are not uploaded to external services
+
+## Sandbox Security Architecture
+
+ShieldTier includes a hardened sandbox for safely executing and analyzing malicious files. Understanding how it works helps ensure your server remains secure.
+
+### How File Analysis Works
+
+| Analysis Type | Method | Executes Code? | Risk Level |
+|--------------|--------|----------------|------------|
+| Email (.eml/.msg) | Static parsing | No | None |
+| PDF | Static parsing | No | None |
+| Office (.docx/.xlsx) | Static parsing | No | None |
+| QR Code | Image decoding | No | None |
+| **Sandbox Scripts** | **Dynamic execution** | **Yes** | **Isolated** |
+| **Sandbox Executables** | **Dynamic execution** | **Yes** | **Isolated** |
+
+### Sandbox Isolation Layers
+
+The sandbox uses multiple layers of protection to prevent malicious code from escaping:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    MALICIOUS FILE                           │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 1: RESOURCE LIMITS (prlimit)                         │
+│  ├── Memory: 512MB max                                      │
+│  ├── File size: 100MB max                                   │
+│  ├── Processes: 50 max                                      │
+│  ├── Open files: 256 max                                    │
+│  └── Core dumps: Disabled                                   │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 2: SECCOMP FILTER (syscall blocking)                 │
+│  Blocked syscalls:                                          │
+│  ├── kexec_load, reboot (system takeover)                   │
+│  ├── mount, umount (filesystem escape)                      │
+│  ├── ptrace (process debugging/injection)                   │
+│  ├── init_module, delete_module (kernel modules)            │
+│  ├── bpf, perf_event_open (kernel tracing)                  │
+│  ├── userfaultfd, io_uring (kernel exploits)                │
+│  └── 40+ other dangerous syscalls                           │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 3: NAMESPACE ISOLATION (bubblewrap)                  │
+│  ├── --unshare-all: New PID, network, user, mount, IPC      │
+│  ├── --unshare-net: No network access                       │
+│  ├── --ro-bind: Read-only system directories                │
+│  ├── --tmpfs /sys: Block kernel info                        │
+│  ├── --cap-drop ALL: No Linux capabilities                  │
+│  ├── --new-session: Isolated terminal session               │
+│  ├── --die-with-parent: Auto-kill on parent exit            │
+│  └── --hostname sandbox: Isolated hostname                  │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 4: TIMEOUT ENFORCEMENT                               │
+│  ├── Default: 30 seconds                                    │
+│  ├── Maximum: 5 minutes                                     │
+│  └── Signal: SIGKILL (cannot be caught)                     │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 5: AUDIT LOGGING (auditd)                            │
+│  ├── All sandbox directory access logged                    │
+│  ├── bwrap executions logged                                │
+│  ├── Blocked syscall attempts logged                        │
+│  └── Alerts on suspicious activity                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Sandbox Components
+
+| Component | Purpose | Installation |
+|-----------|---------|--------------|
+| **Bubblewrap** | Linux namespace isolation | `apt install bubblewrap` |
+| **Seccomp** | Syscall filtering | Built into kernel |
+| **prlimit** | Resource limits | Built into coreutils |
+| **Strace** | Syscall tracing | `apt install strace` |
+| **Wine** | Windows .exe analysis | `apt install wine` |
+| **LibreOffice** | Office macro execution | `apt install libreoffice` |
+| **Docker** | Enhanced isolation (optional) | `curl -fsSL https://get.docker.com \| sh` |
+| **Auditd** | Security logging | `apt install auditd` |
+
+### Sandbox API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/sandbox/status` | GET | Get sandbox capabilities and status |
+| `/api/sandbox/analyze` | POST | Analyze file in sandbox |
+| `/api/sandbox/url` | POST | Analyze URL behavior in sandbox |
+
+### Sandbox Analysis Request
+
+```bash
+# Analyze a suspicious script
+curl -X POST http://localhost:3000/api/sandbox/analyze \
+  -F "file=@suspicious.sh" \
+  -F "secretKey=your-secret-key" \
+  -F "timeout=60"
+```
+
+### Sandbox Response
+
+```json
+{
+  "entryRef": "MSB0123",
+  "fileAnalysis": {
+    "filename": "suspicious.sh",
+    "fileType": "script",
+    "hashes": {
+      "md5": "abc123...",
+      "sha256": "def456..."
+    }
+  },
+  "execution": {
+    "success": true,
+    "exitCode": 0,
+    "stdout": "...",
+    "stderr": "...",
+    "executionTime": 1.23
+  },
+  "iocs": {
+    "ips": ["192.168.1.1", "10.0.0.1"],
+    "urls": ["http://malware.com/payload"],
+    "domains": ["malware.com", "c2server.net"],
+    "hashes": []
+  },
+  "syscalls": {
+    "file": ["open", "read", "write"],
+    "network": ["connect"],
+    "process": ["fork", "execve"]
+  },
+  "riskScore": 75,
+  "riskLevel": "High"
+}
+```
+
+### Verifying Sandbox Security
+
+```bash
+# Check sandbox status
+curl -s http://localhost:3000/api/sandbox/status | python3 -m json.tool
+
+# View audit logs
+sudo ausearch -k shieldtier_sandbox | tail -20
+
+# Test isolation (should fail to escape)
+echo '#!/bin/bash
+cat /etc/shadow
+mount /dev/sda1 /mnt
+curl http://evil.com
+' > test.sh
+
+curl -X POST http://localhost:3000/api/sandbox/analyze \
+  -F "file=@test.sh" \
+  -F "secretKey=testkey123"
+```
+
+### Sandbox Limitations
+
+While the sandbox provides strong isolation, no sandbox is 100% secure:
+
+1. **Kernel exploits** - Zero-day kernel vulnerabilities could potentially escape
+2. **Hardware vulnerabilities** - Spectre/Meltdown-class attacks
+3. **Time-based attacks** - Cannot prevent all timing side channels
+
+**Recommendations for high-security environments:**
+- Run sandbox on dedicated VM or container
+- Keep kernel updated
+- Monitor audit logs for anomalies
+- Consider running on separate physical machine for nation-state level threats
 
 ## Screenshot Service Setup
 

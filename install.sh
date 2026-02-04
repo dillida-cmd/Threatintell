@@ -70,12 +70,38 @@ echo -e "${BLUE}[1/8] Installing system dependencies...${NC}"
 apt update
 apt install -y python3 python3-pip python3-venv git nginx ufw curl
 
-# Optional dependencies
+# Optional dependencies - Screenshots
 apt install -y chromium-browser chromium-chromedriver 2>/dev/null || \
 apt install -y chromium chromium-driver 2>/dev/null || \
 echo -e "${YELLOW}Chromium not available, screenshots will be limited${NC}"
 
-apt install -y bubblewrap strace poppler-utils 2>/dev/null || true
+# Sandbox dependencies - Core
+apt install -y bubblewrap strace poppler-utils auditd 2>/dev/null || true
+
+# Sandbox dependencies - Wine (for Windows .exe analysis)
+echo -e "${BLUE}Installing Wine for Windows executable analysis...${NC}"
+dpkg --add-architecture i386 2>/dev/null || true
+apt update
+apt install -y wine wine32 wine64 2>/dev/null || \
+apt install -y wine 2>/dev/null || \
+echo -e "${YELLOW}Wine not available, Windows executable analysis will be disabled${NC}"
+
+# Sandbox dependencies - LibreOffice (for Office macro execution in sandbox)
+echo -e "${BLUE}Installing LibreOffice for Office document analysis...${NC}"
+apt install -y libreoffice --no-install-recommends 2>/dev/null || \
+echo -e "${YELLOW}LibreOffice not available, Office macro execution will be disabled${NC}"
+
+# Sandbox dependencies - Docker (optional, for stronger isolation)
+echo -e "${BLUE}Installing Docker for enhanced sandbox isolation...${NC}"
+if ! command -v docker &> /dev/null; then
+    curl -fsSL https://get.docker.com | sh 2>/dev/null || \
+    echo -e "${YELLOW}Docker not available, using bubblewrap for sandboxing${NC}"
+fi
+if command -v docker &> /dev/null; then
+    systemctl enable docker 2>/dev/null || true
+    systemctl start docker 2>/dev/null || true
+    usermod -aG docker shieldtier 2>/dev/null || true
+fi
 
 # Step 2: Install Node.js
 echo -e "${BLUE}[2/8] Installing Node.js...${NC}"
@@ -220,6 +246,13 @@ systemctl daemon-reload
 systemctl enable shieldtier
 systemctl start shieldtier
 
+# Install sandbox audit rules
+if [ -f /opt/shieldtier/app/audit-sandbox.rules ]; then
+    echo -e "${BLUE}Installing sandbox audit rules...${NC}"
+    cp /opt/shieldtier/app/audit-sandbox.rules /etc/audit/rules.d/sandbox.rules 2>/dev/null || true
+    auditctl -R /etc/audit/rules.d/sandbox.rules 2>/dev/null || true
+fi
+
 # Step 8: Configure Nginx
 echo -e "${BLUE}[8/8] Configuring Nginx...${NC}"
 
@@ -343,5 +376,16 @@ echo -e "6. ${BLUE}Restart and verify:${NC}"
 echo "   sudo systemctl restart shieldtier"
 echo "   curl -s http://localhost:3000/api/status"
 echo ""
+echo -e "7. ${BLUE}Verify sandbox status:${NC}"
+echo "   curl -s http://localhost:3000/api/sandbox/status | python3 -m json.tool"
+echo ""
 echo -e "${GREEN}ShieldTier will be available at: https://$DOMAIN${NC}"
+echo ""
+echo -e "${BLUE}Sandbox Capabilities Installed:${NC}"
+command -v bwrap &>/dev/null && echo "  ✓ Bubblewrap (sandbox isolation)" || echo "  ✗ Bubblewrap"
+command -v docker &>/dev/null && echo "  ✓ Docker (enhanced isolation)" || echo "  ✗ Docker"
+command -v wine &>/dev/null && echo "  ✓ Wine (Windows .exe analysis)" || echo "  ✗ Wine"
+command -v libreoffice &>/dev/null && echo "  ✓ LibreOffice (Office macro execution)" || echo "  ✗ LibreOffice"
+command -v strace &>/dev/null && echo "  ✓ Strace (syscall tracing)" || echo "  ✗ Strace"
+command -v chromium &>/dev/null || command -v chromium-browser &>/dev/null && echo "  ✓ Chromium (URL screenshots)" || echo "  ✗ Chromium"
 echo ""
