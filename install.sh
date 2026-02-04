@@ -131,6 +131,65 @@ sudo -u shieldtier npm run build
 mkdir -p /opt/shieldtier/data
 chown shieldtier:shieldtier /opt/shieldtier/data
 
+# Create API keys config template if not exists
+if [ ! -f /opt/shieldtier/app/api_keys.json ]; then
+    cat > /opt/shieldtier/app/api_keys.json << 'APIEOF'
+{
+  "_comment": "API Keys Configuration - Add your API keys below",
+
+  "abuseipdb": {
+    "api_key": "",
+    "enabled": true,
+    "description": "IP reputation - https://www.abuseipdb.com/account/api"
+  },
+
+  "virustotal": {
+    "api_key": "",
+    "enabled": true,
+    "description": "URL/IP/Hash scanning - https://www.virustotal.com/gui/my-apikey"
+  },
+
+  "urlhaus": {
+    "api_key": "",
+    "enabled": true,
+    "description": "Malicious URLs (abuse.ch) - https://auth.abuse.ch/"
+  },
+
+  "ipqualityscore": {
+    "api_key": "",
+    "enabled": true,
+    "description": "IP fraud scoring - https://www.ipqualityscore.com/"
+  },
+
+  "alienvault_otx": {
+    "api_key": "",
+    "enabled": true,
+    "description": "Open Threat Exchange - https://otx.alienvault.com/api"
+  },
+
+  "shodan": {
+    "api_key": "",
+    "enabled": true,
+    "description": "Device search - https://account.shodan.io/"
+  },
+
+  "greynoise": {
+    "api_key": "",
+    "enabled": true,
+    "description": "Scanner detection - https://viz.greynoise.io/account/api-key"
+  },
+
+  "threatfox": {
+    "api_key": "",
+    "enabled": true,
+    "description": "IOC database (abuse.ch) - https://auth.abuse.ch/"
+  }
+}
+APIEOF
+    chown shieldtier:shieldtier /opt/shieldtier/app/api_keys.json
+    chmod 600 /opt/shieldtier/app/api_keys.json
+fi
+
 # Step 7: Create systemd service
 echo -e "${BLUE}[7/8] Creating systemd service...${NC}"
 cat > /etc/systemd/system/shieldtier.service << 'EOF'
@@ -276,7 +335,12 @@ echo "   - Add A record pointing to your server IP"
 echo "   - Enable Proxy (orange cloud)"
 echo "   - Set SSL mode to 'Full (strict)'"
 echo ""
-echo -e "5. ${BLUE}Verify installation:${NC}"
+echo -e "5. ${BLUE}Add API keys:${NC}"
+echo "   sudo nano /opt/shieldtier/app/api_keys.json"
+echo "   # Add keys for: VirusTotal, AbuseIPDB, GreyNoise, Shodan, etc."
+echo ""
+echo -e "6. ${BLUE}Restart and verify:${NC}"
+echo "   sudo systemctl restart shieldtier"
 echo "   curl -s http://localhost:3000/api/status"
 echo ""
 echo -e "${GREEN}ShieldTier will be available at: https://$DOMAIN${NC}"
