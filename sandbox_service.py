@@ -190,7 +190,8 @@ class SandboxConfig:
     def _check_chromium(self) -> Dict:
         """Check if Chromium is available for URL analysis"""
         result = {'available': False, 'path': None}
-        for cmd in ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable']:
+        # Prioritize google-chrome over snap chromium which has permission issues
+        for cmd in ['google-chrome-stable', 'google-chrome', 'chromium', 'chromium-browser']:
             path = shutil.which(cmd)
             if path:
                 result['available'] = True

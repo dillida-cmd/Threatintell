@@ -121,7 +121,7 @@ function App() {
       <footer className="border-t border-dark-100 bg-dark-600">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <p className="text-gray-500 text-xs text-center">
-            Powered by MTI @2026
+            ShieldTier - Threat Intelligence Platform @2026
           </p>
         </div>
       </footer>
