@@ -43,9 +43,10 @@ def check_browser_available() -> Dict[str, bool]:
         'wkhtmltoimage': False,
     }
 
-    # Check Chromium
-    for cmd in ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable']:
-        if shutil.which(cmd):
+    # Check Chromium (including snap paths)
+    for cmd in ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable',
+                '/snap/bin/chromium', '/usr/bin/chromium', '/usr/bin/chromium-browser']:
+        if shutil.which(cmd) or (cmd.startswith('/') and os.path.exists(cmd)):
             available['chromium'] = True
             break
 
@@ -79,8 +80,9 @@ def capture_with_chromium(url: str, output_path: str, user_agent: str = None,
 
     # Find Chromium binary
     chromium_bin = None
-    for cmd in ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable']:
-        if shutil.which(cmd):
+    for cmd in ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable',
+                '/snap/bin/chromium', '/usr/bin/chromium', '/usr/bin/chromium-browser']:
+        if shutil.which(cmd) or (cmd.startswith('/') and os.path.exists(cmd)):
             chromium_bin = cmd
             break
 
