@@ -1,9 +1,12 @@
-import { useState } from 'react'
+import { useState, lazy, Suspense } from 'react'
 import { Search, Link, Shield, AlertTriangle, Camera, ExternalLink, Globe, ArrowRight, X, ZoomIn } from 'lucide-react'
 import { lookupUrlThreat, analyzeUrl } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
 import { defangUrl, defangIp, defangDomain } from '../utils/defang'
+
+// Lazy load the attack flow diagram
+const AttackFlowDiagram = lazy(() => import('../components/AttackFlowDiagram'))
 
 // Screenshot zoom modal component
 function ScreenshotModal({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
@@ -487,6 +490,13 @@ function AnalysisResults({ results }: { results: any }) {
             </div>
           )}
         </div>
+      )}
+
+      {/* Attack Flow Diagram - Visual representation of URL redirect chain */}
+      {(redirectChain.length > 0 || analysis.finalUrl) && (
+        <Suspense fallback={<div className="card"><LoadingSpinner message="Loading flow diagram..." /></div>}>
+          <AttackFlowDiagram analysis={analysis} />
+        </Suspense>
       )}
     </div>
   )
