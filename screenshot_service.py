@@ -43,8 +43,8 @@ def check_browser_available() -> Dict[str, bool]:
         'wkhtmltoimage': False,
     }
 
-    # Check Chromium (including snap paths)
-    for cmd in ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable',
+    # Check Chromium (prioritize google-chrome over snap versions which have permission issues)
+    for cmd in ['google-chrome-stable', 'google-chrome', 'chromium', 'chromium-browser',
                 '/snap/bin/chromium', '/usr/bin/chromium', '/usr/bin/chromium-browser']:
         if shutil.which(cmd) or (cmd.startswith('/') and os.path.exists(cmd)):
             available['chromium'] = True
@@ -78,9 +78,9 @@ def capture_with_chromium(url: str, output_path: str, user_agent: str = None,
                           width: int = 1920, height: int = 1080, timeout: int = 30) -> Tuple[bool, str]:
     """Capture screenshot using headless Chromium"""
 
-    # Find Chromium binary
+    # Find Chromium binary (prioritize google-chrome over snap versions which have permission issues)
     chromium_bin = None
-    for cmd in ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable',
+    for cmd in ['google-chrome-stable', 'google-chrome', 'chromium', 'chromium-browser',
                 '/snap/bin/chromium', '/usr/bin/chromium', '/usr/bin/chromium-browser']:
         if shutil.which(cmd) or (cmd.startswith('/') and os.path.exists(cmd)):
             chromium_bin = cmd
