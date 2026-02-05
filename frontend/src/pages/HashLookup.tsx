@@ -98,7 +98,7 @@ export default function HashLookup() {
               <code className="block p-3 bg-dark-500 rounded-lg text-primary-400 text-sm break-all font-mono mb-4">
                 {results.hash}
               </code>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2 mb-4">
                 {summary.isMalicious ? (
                   <span className="badge badge-danger">MALICIOUS</span>
                 ) : (
@@ -110,6 +110,21 @@ export default function HashLookup() {
                   </span>
                 )}
               </div>
+
+              {/* AI Verdict */}
+              {summary.verdict && (
+                <div className={`p-4 rounded-lg ${
+                  summary.isMalicious
+                    ? 'bg-red-500/10 border border-red-500/30'
+                    : 'bg-green-500/10 border border-green-500/30'
+                }`}>
+                  <p className={`text-sm leading-relaxed ${
+                    summary.isMalicious ? 'text-red-300' : 'text-green-300'
+                  }`}>
+                    {summary.verdict}
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 

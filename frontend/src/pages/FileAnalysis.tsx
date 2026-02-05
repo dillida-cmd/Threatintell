@@ -529,6 +529,8 @@ function EmailResultsView({ analysis, riskScore }: { analysis: any; riskScore: n
   const attachments = analysis.attachments || []
   const urls = analysis.urls || []
   const auth = analysis.authentication || analysis.security_indicators || {}
+  const summary = analysis.summary || {}
+  const verdict = summary.verdict || analysis.verdict
 
   return (
     <div className="space-y-6">
@@ -542,12 +544,27 @@ function EmailResultsView({ analysis, riskScore }: { analysis: any; riskScore: n
             <Mail className="h-5 w-5 text-primary-500" />
             Email Analysis
           </h3>
-          <div className="space-y-2">
+          <div className="space-y-2 mb-4">
             <InfoRow label="Subject" value={headers.subject || analysis.subject} />
             <InfoRow label="From" value={headers.from || analysis.from} />
             <InfoRow label="To" value={headers.to || analysis.to} />
             <InfoRow label="Date" value={headers.date || analysis.date} />
           </div>
+
+          {/* AI Verdict */}
+          {verdict && (
+            <div className={`p-4 rounded-lg ${
+              riskScore >= 50
+                ? 'bg-red-500/10 border border-red-500/30'
+                : 'bg-green-500/10 border border-green-500/30'
+            }`}>
+              <p className={`text-sm leading-relaxed ${
+                riskScore >= 50 ? 'text-red-300' : 'text-green-300'
+              }`}>
+                {verdict}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -618,6 +635,8 @@ function PdfResultsView({ analysis, riskScore }: { analysis: any; riskScore: num
   const urls = analysis.urls || []
   const qrCodes = analysis.qrCodes || analysis.qr_codes || []
   const javascript = analysis.javascript || []
+  const summary = analysis.summary || {}
+  const verdict = summary.verdict || analysis.verdict
 
   return (
     <div className="space-y-6">
@@ -631,12 +650,27 @@ function PdfResultsView({ analysis, riskScore }: { analysis: any; riskScore: num
             <FileText className="h-5 w-5 text-primary-500" />
             PDF Analysis
           </h3>
-          <div className="space-y-2">
+          <div className="space-y-2 mb-4">
             <InfoRow label="Title" value={metadata.title} />
             <InfoRow label="Author" value={metadata.author} />
             <InfoRow label="Pages" value={analysis.pageCount || analysis.page_count} />
             <InfoRow label="Creator" value={metadata.creator} />
           </div>
+
+          {/* AI Verdict */}
+          {verdict && (
+            <div className={`p-4 rounded-lg ${
+              riskScore >= 50
+                ? 'bg-red-500/10 border border-red-500/30'
+                : 'bg-green-500/10 border border-green-500/30'
+            }`}>
+              <p className={`text-sm leading-relaxed ${
+                riskScore >= 50 ? 'text-red-300' : 'text-green-300'
+              }`}>
+                {verdict}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -728,6 +762,8 @@ function OfficeResultsView({ analysis, riskScore }: { analysis: any; riskScore: 
   const patterns = analysis.suspiciousPatterns || analysis.suspicious_patterns || []
   const screenshots = analysis.documentScreenshots || analysis.document_screenshots || []
   const urls = analysis.urls || []
+  const summary = analysis.summary || {}
+  const verdict = summary.verdict || analysis.verdict
 
   return (
     <div className="space-y-6">
@@ -741,10 +777,25 @@ function OfficeResultsView({ analysis, riskScore }: { analysis: any; riskScore: 
             <Table className="h-5 w-5 text-primary-500" />
             Document Analysis
           </h3>
-          <div className="space-y-2">
+          <div className="space-y-2 mb-4">
             <InfoRow label="Filename" value={analysis.filename} />
             <InfoRow label="Type" value={analysis.documentType || analysis.type} />
           </div>
+
+          {/* AI Verdict */}
+          {verdict && (
+            <div className={`p-4 rounded-lg ${
+              riskScore >= 50
+                ? 'bg-red-500/10 border border-red-500/30'
+                : 'bg-green-500/10 border border-green-500/30'
+            }`}>
+              <p className={`text-sm leading-relaxed ${
+                riskScore >= 50 ? 'text-red-300' : 'text-green-300'
+              }`}>
+                {verdict}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 

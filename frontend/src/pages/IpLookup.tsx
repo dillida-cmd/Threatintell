@@ -118,6 +118,21 @@ export default function IpLookup() {
                 )}
               </div>
 
+              {/* AI Verdict */}
+              {summary.verdict && (
+                <div className={`p-4 rounded-lg mb-4 ${
+                  summary.isMalicious
+                    ? 'bg-red-500/10 border border-red-500/30'
+                    : 'bg-green-500/10 border border-green-500/30'
+                }`}>
+                  <p className={`text-sm leading-relaxed ${
+                    summary.isMalicious ? 'text-red-300' : 'text-green-300'
+                  }`}>
+                    {summary.verdict}
+                  </p>
+                </div>
+              )}
+
               {/* Security Indicators */}
               <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
                 {[
