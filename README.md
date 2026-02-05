@@ -1,4 +1,4 @@
-# Manny Threat Intel
+# ShieldTier
 
 A comprehensive threat intelligence platform for security analysts and researchers. Investigate IPs, URLs, and file hashes across multiple threat intelligence sources, and analyze suspicious files in a sandboxed environment.
 
@@ -220,11 +220,11 @@ API Keys Configured:
 ### Service Commands (if installed as service)
 
 ```bash
-sudo systemctl start manny-threatintel    # Start server
-sudo systemctl stop manny-threatintel     # Stop server
-sudo systemctl restart manny-threatintel  # Restart server
-sudo systemctl status manny-threatintel   # Check status
-sudo journalctl -u manny-threatintel -f   # View logs
+sudo systemctl start shieldtier    # Start server
+sudo systemctl stop shieldtier     # Stop server
+sudo systemctl restart shieldtier  # Restart server
+sudo systemctl status shieldtier   # Check status
+sudo journalctl -u shieldtier -f   # View logs
 ```
 
 ### Helper Scripts
@@ -399,7 +399,7 @@ Threatintell/
 ├── stop.sh                   # Stop server
 ├── status.sh                 # Check status
 ├── reconfigure.sh            # Re-run configuration
-├── manny-threatintel.service # Systemd unit template
+├── shieldtier.service # Systemd unit template
 ├── README.md                 # This file
 │
 ├── api_keys.json             # API keys (generated, not in git)
@@ -640,8 +640,8 @@ kill -9 <PID>
 ### Service not starting
 
 ```bash
-sudo journalctl -u manny-threatintel -n 50
-sudo systemctl status manny-threatintel
+sudo journalctl -u shieldtier -n 50
+sudo systemctl status shieldtier
 ```
 
 ### Reconfigure settings

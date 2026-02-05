@@ -4128,7 +4128,7 @@ def main():
         local_ip = '127.0.0.1'
 
     print(f"\n{'='*50}")
-    print(f"  Manny Threat Intel Server Started")
+    print(f"  ShieldTier Server Started")
     print(f"{'='*50}")
     print(f"  Local:   http://localhost:{PORT}")
     print(f"  Network: http://{local_ip}:{PORT}")

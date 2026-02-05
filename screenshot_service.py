@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-URL Screenshot Service for Manny Threat Intel
+URL Screenshot Service for ShieldTier
 Captures screenshots of URLs using headless browsers in isolated environment
 """
 

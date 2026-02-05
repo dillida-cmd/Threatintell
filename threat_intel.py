@@ -942,7 +942,7 @@ def convert_to_sentinel_format(data: Dict) -> Dict:
 
     return {
         'type': 'bundle',
-        'id': f'bundle--manny-threat-intel-{datetime.now().strftime("%Y%m%d%H%M%S")}',
+        'id': f'bundle--shieldtier-{datetime.now().strftime("%Y%m%d%H%M%S")}',
         'objects': indicators,
         'exportedAt': data.get('exportedAt'),
         'counts': data.get('counts')

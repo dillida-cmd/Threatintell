@@ -53,3 +53,17 @@ nicegui_frontend.py
 # Temporary files
 /tmp/
 CLAUDE.md
+
+# Sample files and test malware (never commit)
+test_samples/
+sandbox/samples/*
+!sandbox/samples/.gitkeep
+*.exe
+*.dll
+*.msi
+*.scr
+my_payload*
+*.eml
+*.docm
+*.xlsm
+*.pptm

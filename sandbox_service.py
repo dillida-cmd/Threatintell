@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Micro Sandbox Service for Manny Threat Intel
+Micro Sandbox Service for ShieldTier
 Analyzes attachments (.exe, .pdf, scripts) and URLs in isolated environments
 Collects IOCs, captures screenshots, and integrates with existing modules
 """
