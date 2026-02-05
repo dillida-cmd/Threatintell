@@ -2520,7 +2520,7 @@ class URLAnalyzer:
             score += min(len(iocs['urls']) * 2, 20)
 
         # Content type scoring
-        content_type = result.get('contentType', '')
+        content_type = result.get('contentType') or ''
         if 'application/octet-stream' in content_type:
             score += 30
         if 'application/x-msdownload' in content_type:
