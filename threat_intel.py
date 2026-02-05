@@ -2113,10 +2113,88 @@ def investigate_url(url: str) -> Dict:
         results['summary']['isMalicious'] = True
         results['summary']['riskScore'] = min(100, 40 + (results['summary']['maliciousSources'] * 25))
 
+    # Generate AI-style verdict summary
+    results['summary']['verdict'] = _generate_url_verdict(url, results)
+
     # Store in IOC table for SIEM export
     store_url_ioc(url, results)
 
     return results
+
+
+def _generate_url_verdict(url: str, results: Dict) -> str:
+    """Generate a human-readable verdict summary for a URL"""
+    from urllib.parse import urlparse
+
+    summary = results.get('summary', {})
+    sources = results.get('sources', {})
+
+    risk_score = summary.get('riskScore', 0)
+    is_malicious = summary.get('isMalicious', False)
+    findings = summary.get('findings', [])
+
+    # Parse URL for context
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc
+    except:
+        domain = url[:50]
+
+    # Gather threat context
+    threat_type = None
+    malware_name = None
+    vt_detections = 0
+
+    if 'urlhaus' in sources:
+        urlhaus = sources['urlhaus']
+        threat_type = urlhaus.get('threat')
+        if urlhaus.get('tags'):
+            malware_name = ', '.join(urlhaus['tags'][:3])
+
+    if 'virustotal' in sources:
+        vt = sources['virustotal']
+        vt_detections = vt.get('malicious', 0)
+
+    # Build verdict
+    parts = []
+
+    # Risk assessment
+    if risk_score >= 80:
+        parts.append(f"DANGEROUS ({risk_score}/100)")
+    elif risk_score >= 50:
+        parts.append(f"SUSPICIOUS ({risk_score}/100)")
+    elif risk_score >= 20:
+        parts.append(f"LOW RISK ({risk_score}/100)")
+    else:
+        parts.append(f"CLEAN ({risk_score}/100)")
+
+    # Domain info
+    parts.append(f"URL on domain: {domain[:40]}{'...' if len(domain) > 40 else ''}.")
+
+    # Threat details
+    if is_malicious:
+        threats = []
+        if vt_detections > 0:
+            threats.append(f"detected by {vt_detections} security vendors")
+        if threat_type:
+            threats.append(f"classified as {threat_type}")
+        if malware_name:
+            threats.append(f"associated with {malware_name}")
+
+        if threats:
+            parts.append(f"Identified as: {', '.join(threats)}.")
+
+        # Recommendation
+        if threat_type and 'malware' in threat_type.lower():
+            parts.append("RECOMMENDATION: Block immediately - known malware distribution.")
+        elif threat_type and 'phishing' in threat_type.lower():
+            parts.append("RECOMMENDATION: Block immediately - phishing/credential theft.")
+        else:
+            parts.append("RECOMMENDATION: Block this URL and investigate any access.")
+    else:
+        parts.append("No malicious activity detected across threat intelligence sources.")
+
+    return " ".join(parts)
 
 
 def investigate_hash(file_hash: str) -> Dict:
@@ -2224,10 +2302,104 @@ def investigate_hash(file_hash: str) -> Dict:
         results['summary']['isMalicious'] = True
         results['summary']['riskScore'] = min(100, 50 + (results['summary']['maliciousSources'] * 20))
 
+    # Generate AI-style verdict summary
+    results['summary']['verdict'] = _generate_hash_verdict(file_hash, results)
+
     # Store in IOC table for SIEM export
     store_hash_ioc(file_hash, results)
 
     return results
+
+
+def _generate_hash_verdict(file_hash: str, results: Dict) -> str:
+    """Generate a human-readable verdict summary for a file hash"""
+    summary = results.get('summary', {})
+    sources = results.get('sources', {})
+
+    risk_score = summary.get('riskScore', 0)
+    is_malicious = summary.get('isMalicious', False)
+    findings = summary.get('findings', [])
+
+    # Gather context
+    malware_family = None
+    malware_type = None
+    file_type = None
+    file_name = None
+    vt_detections = 0
+    tags = []
+
+    if 'virustotal' in sources:
+        vt = sources['virustotal']
+        vt_detections = vt.get('malicious', 0)
+        file_type = vt.get('fileType')
+        file_name = vt.get('fileName')
+
+    if 'malwarebazaar' in sources:
+        mb = sources['malwarebazaar']
+        if mb.get('found'):
+            malware_family = mb.get('signature') or mb.get('malwareFamily')
+            file_type = file_type or mb.get('fileType')
+            file_name = file_name or mb.get('fileName')
+            tags = mb.get('tags', [])[:5]
+
+    if 'urlhaus' in sources:
+        uh = sources['urlhaus']
+        if uh.get('signature'):
+            malware_family = malware_family or uh.get('signature')
+
+    # Build verdict
+    parts = []
+
+    # Risk assessment
+    if risk_score >= 80:
+        parts.append(f"MALICIOUS ({risk_score}/100)")
+    elif risk_score >= 50:
+        parts.append(f"SUSPICIOUS ({risk_score}/100)")
+    elif risk_score >= 20:
+        parts.append(f"LOW RISK ({risk_score}/100)")
+    else:
+        parts.append(f"CLEAN ({risk_score}/100)")
+
+    # File info
+    if file_name:
+        parts.append(f"File: {file_name[:40]}{'...' if len(file_name) > 40 else ''}.")
+    if file_type:
+        parts.append(f"Type: {file_type}.")
+
+    # Threat details
+    if is_malicious:
+        threats = []
+        if vt_detections > 0:
+            threats.append(f"detected by {vt_detections} antivirus engines")
+        if malware_family:
+            threats.append(f"identified as {malware_family}")
+        if tags:
+            threats.append(f"tags: {', '.join(tags)}")
+
+        if threats:
+            parts.append(f"Identified as: {', '.join(threats)}.")
+
+        # Recommendations based on malware type
+        if malware_family:
+            family_lower = malware_family.lower()
+            if any(x in family_lower for x in ['ransom', 'crypt', 'locker']):
+                parts.append("RECOMMENDATION: RANSOMWARE - Isolate affected systems immediately.")
+            elif any(x in family_lower for x in ['trojan', 'rat', 'backdoor']):
+                parts.append("RECOMMENDATION: TROJAN/RAT - Check for persistence and lateral movement.")
+            elif any(x in family_lower for x in ['miner', 'coin']):
+                parts.append("RECOMMENDATION: CRYPTOMINER - Check system resources and network traffic.")
+            elif any(x in family_lower for x in ['steal', 'password', 'credential']):
+                parts.append("RECOMMENDATION: STEALER - Reset credentials for affected users.")
+            else:
+                parts.append("RECOMMENDATION: Quarantine file and investigate execution history.")
+        else:
+            parts.append("RECOMMENDATION: Quarantine and analyze with sandbox.")
+    else:
+        parts.append("No malicious signatures detected across threat intelligence databases.")
+        if vt_detections == 0 and 'virustotal' in sources:
+            parts.append("File appears safe but exercise caution with unknown executables.")
+
+    return " ".join(parts)
 
 
 def investigate_all_iocs(ips: List[str] = None, urls: List[str] = None,

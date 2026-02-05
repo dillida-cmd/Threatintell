@@ -1477,6 +1477,124 @@ def extract_download_info(url):
 # Analysis Functions
 # ============================================================================
 
+def generate_file_analysis_verdict(analysis_type: str, result: dict, filename: str) -> str:
+    """Generate a human-readable verdict summary for file analysis"""
+    risk_score = result.get('riskScore', 0)
+    risk_level = result.get('riskLevel', 'Unknown')
+
+    parts = []
+
+    # Risk assessment
+    if risk_score >= 70:
+        parts.append(f"HIGH RISK ({risk_score}/100)")
+    elif risk_score >= 40:
+        parts.append(f"MODERATE RISK ({risk_score}/100)")
+    elif risk_score >= 20:
+        parts.append(f"LOW RISK ({risk_score}/100)")
+    else:
+        parts.append(f"CLEAN ({risk_score}/100)")
+
+    if analysis_type == 'email':
+        # Email-specific verdict
+        subject = result.get('subject', '')[:50]
+        sender = result.get('from', '')
+        attachments = result.get('attachments', [])
+        links = result.get('links', [])
+        suspicious = result.get('suspiciousIndicators', [])
+
+        if subject:
+            parts.append(f"Subject: \"{subject}{'...' if len(result.get('subject', '')) > 50 else ''}\"")
+
+        if sender:
+            parts.append(f"From: {sender}.")
+
+        threats = []
+        if attachments:
+            dangerous_exts = [a for a in attachments if any(ext in a.get('filename', '').lower()
+                            for ext in ['.exe', '.dll', '.js', '.vbs', '.bat', '.ps1', '.scr'])]
+            if dangerous_exts:
+                threats.append(f"{len(dangerous_exts)} dangerous attachment(s)")
+            else:
+                parts.append(f"Contains {len(attachments)} attachment(s).")
+
+        if links:
+            suspicious_links = [l for l in links if l.get('suspicious')]
+            if suspicious_links:
+                threats.append(f"{len(suspicious_links)} suspicious link(s)")
+
+        if suspicious:
+            threats.extend(suspicious[:3])
+
+        if threats:
+            parts.append(f"Detected: {', '.join(threats)}.")
+            parts.append("RECOMMENDATION: Do not click links or open attachments. Verify sender identity.")
+        elif risk_score < 20:
+            parts.append("No obvious phishing indicators detected.")
+
+    elif analysis_type == 'pdf':
+        # PDF-specific verdict
+        has_js = result.get('hasJavaScript', False)
+        has_action = result.get('hasAutoAction', False)
+        has_embedded = result.get('hasEmbeddedFiles', False)
+        suspicious = result.get('suspiciousElements', [])
+
+        threats = []
+        if has_js:
+            threats.append("contains JavaScript")
+        if has_action:
+            threats.append("has auto-open actions")
+        if has_embedded:
+            threats.append("contains embedded files")
+
+        if threats:
+            parts.append(f"PDF {', '.join(threats)}.")
+            parts.append("RECOMMENDATION: Open in isolated viewer or sandbox. Do not enable active content.")
+        else:
+            parts.append("PDF appears to be a standard document without active content.")
+
+    elif analysis_type == 'office':
+        # Office document verdict
+        has_macros = result.get('hasMacros', False)
+        macro_type = result.get('macroType', '')
+        suspicious = result.get('suspiciousIndicators', [])
+        external = result.get('externalLinks', [])
+
+        threats = []
+        if has_macros:
+            threats.append(f"contains {macro_type or 'VBA'} macros")
+        if external:
+            threats.append(f"{len(external)} external link(s)")
+        if suspicious:
+            threats.extend(suspicious[:2])
+
+        if threats:
+            parts.append(f"Document {', '.join(threats)}.")
+            if has_macros:
+                parts.append("RECOMMENDATION: Do not enable macros. Analyze in sandbox if execution is needed.")
+            else:
+                parts.append("RECOMMENDATION: Verify document source before opening.")
+        else:
+            parts.append("Document appears clean with no macros or suspicious content.")
+
+    elif analysis_type == 'qrcode':
+        # QR code verdict
+        decoded = result.get('decoded', [])
+        if decoded:
+            urls = [d for d in decoded if d.get('type') == 'url']
+            if urls:
+                url = urls[0].get('data', '')[:50]
+                parts.append(f"QR code links to: {url}{'...' if len(urls[0].get('data', '')) > 50 else ''}")
+
+                if risk_score > 0:
+                    parts.append("RECOMMENDATION: Verify URL reputation before visiting.")
+                else:
+                    parts.append("URL appears safe, but verify before entering credentials.")
+        else:
+            parts.append("No decodable content found in image.")
+
+    return " ".join(parts)
+
+
 def analyze_email(file_data):
     """Analyze an email file (.eml) for security indicators"""
     try:
@@ -3777,6 +3895,10 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             else:
                 self.send_json({'error': 'Unknown analysis type'}, 400)
                 return
+
+            # Generate AI-style verdict for file analysis
+            if result.get('success'):
+                result['verdict'] = generate_file_analysis_verdict(analysis_type, result, filename)
 
             # If analysis successful, store results
             if result.get('success'):
