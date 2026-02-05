@@ -789,6 +789,115 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
 
                 story.append(Spacer(1, 10))
 
+            # Risk Reasons (detailed explanations)
+            risk_reasons = analysis_result.get('riskReasons', [])
+            if risk_reasons:
+                story.append(Paragraph("Risk Analysis Details", heading_style))
+                for reason in risk_reasons[:10]:  # Limit to 10
+                    severity = reason.get('severity', 'unknown').upper()
+                    category = reason.get('category', 'Unknown')
+                    description = reason.get('description', '')
+                    technique = reason.get('technique', '')
+
+                    severity_color = 'red' if severity in ['CRITICAL', 'HIGH'] else 'orange' if severity == 'MEDIUM' else 'black'
+                    story.append(Paragraph(
+                        f"<font color='{severity_color}'><b>[{severity}]</b></font> "
+                        f"<b>{category}:</b> {description}",
+                        body_style
+                    ))
+                    if technique:
+                        story.append(Paragraph(f"    <i>MITRE ATT&CK: {technique}</i>", body_style))
+
+                if len(risk_reasons) > 10:
+                    story.append(Paragraph(f"... and {len(risk_reasons) - 10} more risk factors", body_style))
+                story.append(Spacer(1, 10))
+
+            # Threat Map (MITRE ATT&CK behaviors)
+            threat_map = analysis_result.get('threatMap', {})
+            if threat_map:
+                story.append(Paragraph("Threat Map (MITRE ATT&CK)", heading_style))
+                category_icons = {
+                    'network': 'Network Activity',
+                    'process': 'Process Activity',
+                    'evasion': 'Defense Evasion',
+                    'persistence': 'Persistence',
+                    'credential': 'Credential Access',
+                    'discovery': 'Discovery',
+                    'registry': 'Registry',
+                    'filesystem': 'File System'
+                }
+                for category, behaviors in threat_map.items():
+                    if behaviors:
+                        cat_name = category_icons.get(category, category.title())
+                        story.append(Paragraph(f"<b>{cat_name}:</b>", subheading_style))
+                        for behavior in behaviors[:5]:  # Limit per category
+                            beh_text = behavior.get('behavior', str(behavior))
+                            technique = behavior.get('technique', '')
+                            severity = behavior.get('severity', 'medium')
+                            sev_color = 'red' if severity in ['critical', 'high'] else 'orange' if severity == 'medium' else 'black'
+                            tech_str = f" ({technique})" if technique else ""
+                            story.append(Paragraph(
+                                f"  • <font color='{sev_color}'>{beh_text}</font>{tech_str}",
+                                body_style
+                            ))
+                story.append(Spacer(1, 10))
+
+            # PE Analysis Details
+            pe_analysis = analysis_result.get('peAnalysis', {})
+            if pe_analysis and pe_analysis.get('isPE'):
+                story.append(Paragraph("PE Analysis", heading_style))
+
+                # Basic properties
+                basic = pe_analysis.get('basicProperties', {})
+                header = pe_analysis.get('header', {})
+                pe_data = [
+                    ['File Type:', basic.get('fileType', 'Unknown')],
+                    ['Target Machine:', header.get('targetMachine', 'Unknown')],
+                    ['Compiled:', header.get('compilationTimestamp', 'Unknown')],
+                    ['Entry Point:', header.get('entryPoint', 'Unknown')],
+                    ['Subsystem:', header.get('subsystem', 'Unknown')],
+                    ['Import Hash:', basic.get('imphash', 'N/A')],
+                ]
+                pe_table = Table(pe_data, colWidths=[1.5*inch, 5*inch])
+                pe_table.setStyle(TableStyle([
+                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ]))
+                story.append(pe_table)
+
+                # Imports
+                imports = pe_analysis.get('imports', [])
+                if imports:
+                    story.append(Paragraph("Imports:", subheading_style))
+                    for imp in imports[:5]:
+                        dll = imp.get('dll', 'Unknown')
+                        funcs = [f.get('name', '?') for f in imp.get('functions', [])[:5]]
+                        func_str = ', '.join(funcs)
+                        if len(imp.get('functions', [])) > 5:
+                            func_str += f" (+{len(imp['functions']) - 5} more)"
+                        story.append(Paragraph(f"  • <b>{dll}:</b> {func_str}", body_style))
+
+                # Suspicious strings (C2, network libs, etc.)
+                sus_strings = pe_analysis.get('suspiciousStrings', {})
+                if sus_strings:
+                    findings = sus_strings.get('findings', [])
+                    if findings:
+                        story.append(Paragraph("Suspicious Indicators:", subheading_style))
+                        for finding in findings[:8]:
+                            color = 'red' if 'REVERSE SHELL' in finding or 'C2' in finding else 'orange'
+                            story.append(Paragraph(f"  • <font color='{color}'>{finding}</font>", body_style))
+
+                    # Embedded IPs (C2)
+                    embedded_ips = sus_strings.get('embeddedIPs', [])
+                    if embedded_ips:
+                        story.append(Paragraph("Embedded C2/IPs (defanged):", subheading_style))
+                        for ip in embedded_ips:
+                            defanged = defang_ip(ip.split(':')[0]) + (':' + ip.split(':')[1] if ':' in ip else '')
+                            story.append(Paragraph(f"  • <font color='red'><b>{defanged}</b></font>", body_style))
+
+                story.append(Spacer(1, 10))
+
             # Extracted IOCs
             iocs = analysis_result.get('iocs', {})
             if iocs:
