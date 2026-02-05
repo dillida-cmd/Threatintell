@@ -1938,10 +1938,135 @@ def investigate_ip(ip: str) -> Dict:
             fraud_score = results['sources']['ipqualityscore'].get('fraudScore', 0)
             results['summary']['riskScore'] = max(results['summary']['riskScore'], fraud_score)
 
+    # Generate AI-style verdict summary
+    results['summary']['verdict'] = _generate_ip_verdict(ip, results)
+
     # Store in IOC table for SIEM export
     store_ip_ioc(ip, results)
 
     return results
+
+
+def _generate_ip_verdict(ip: str, results: Dict) -> str:
+    """Generate a human-readable verdict summary for an IP address"""
+    summary = results.get('summary', {})
+    sources = results.get('sources', {})
+
+    risk_score = summary.get('riskScore', 0)
+    is_malicious = summary.get('isMalicious', False)
+    findings = summary.get('findings', [])
+
+    # Gather context from sources
+    org = None
+    isp = None
+    country = None
+    asn = None
+    is_vpn = False
+    is_proxy = False
+    is_tor = False
+    is_datacenter = False
+    is_scanner = False
+    abuse_score = 0
+    vt_detections = 0
+
+    # Extract data from AbuseIPDB
+    if 'abuseipdb' in sources:
+        abuseipdb = sources['abuseipdb']
+        isp = abuseipdb.get('isp')
+        country = abuseipdb.get('country')
+        abuse_score = abuseipdb.get('abuseScore', 0)
+        is_tor = abuseipdb.get('isTor', False)
+
+    # Extract data from IPQualityScore
+    if 'ipqualityscore' in sources:
+        ipqs = sources['ipqualityscore']
+        org = org or ipqs.get('organization')
+        isp = isp or ipqs.get('isp')
+        country = country or ipqs.get('country')
+        is_vpn = ipqs.get('vpn', False)
+        is_proxy = ipqs.get('proxy', False)
+        is_tor = is_tor or ipqs.get('tor', False)
+
+    # Extract data from Shodan
+    if 'shodan' in sources:
+        shodan = sources['shodan']
+        org = org or shodan.get('org')
+        isp = isp or shodan.get('isp')
+        asn = shodan.get('asn')
+
+    # Extract from VirusTotal
+    if 'virustotal' in sources:
+        vt = sources['virustotal']
+        vt_detections = vt.get('malicious', 0)
+        org = org or vt.get('owner')
+        asn = asn or vt.get('asn')
+
+    # Extract from GreyNoise
+    if 'greynoise' in sources:
+        gn = sources['greynoise']
+        is_scanner = gn.get('noise', False)
+        org = org or gn.get('name')
+
+    # Build verdict
+    parts = []
+
+    # Start with risk assessment
+    if risk_score >= 80:
+        parts.append(f"HIGH RISK ({risk_score}/100)")
+    elif risk_score >= 50:
+        parts.append(f"MODERATE RISK ({risk_score}/100)")
+    elif risk_score >= 20:
+        parts.append(f"LOW RISK ({risk_score}/100)")
+    else:
+        parts.append(f"CLEAN ({risk_score}/100)")
+
+    # Add identity info
+    identity_parts = []
+    if org:
+        identity_parts.append(org)
+    elif isp:
+        identity_parts.append(isp)
+    if country:
+        identity_parts.append(country)
+
+    if identity_parts:
+        parts.append(f"This IP belongs to {', '.join(identity_parts)}.")
+
+    # Add threat context
+    threats = []
+    if is_malicious:
+        if vt_detections > 0:
+            threats.append(f"flagged by {vt_detections} security vendors")
+        if abuse_score > 50:
+            threats.append(f"abuse confidence {abuse_score}%")
+
+    if is_tor:
+        threats.append("Tor exit node")
+    if is_vpn:
+        threats.append("VPN/anonymizer")
+    if is_proxy:
+        threats.append("known proxy")
+    if is_scanner:
+        threats.append("internet scanner")
+
+    if threats:
+        parts.append(f"Identified as: {', '.join(threats)}.")
+    elif not is_malicious:
+        # Positive verdict for clean IPs
+        if org and any(safe in org.lower() for safe in ['google', 'cloudflare', 'amazon', 'microsoft', 'akamai']):
+            parts.append("Belongs to a major trusted cloud/CDN provider.")
+        elif risk_score == 0:
+            parts.append("No malicious activity detected across all sources.")
+
+    # Add recommendation
+    if risk_score >= 70:
+        parts.append("RECOMMENDATION: Block this IP immediately.")
+    elif risk_score >= 40:
+        parts.append("RECOMMENDATION: Monitor traffic from this IP closely.")
+    elif is_vpn or is_proxy or is_tor:
+        parts.append("RECOMMENDATION: Consider blocking anonymized traffic based on your security policy.")
+
+    return " ".join(parts)
 
 
 def investigate_url(url: str) -> Dict:
