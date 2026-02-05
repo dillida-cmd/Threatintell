@@ -301,15 +301,36 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
         elif risk_score >= 40:
             risk_color = colors.orange
 
-        # Determine malicious status
-        is_malicious = analysis_result.get('summary', {}).get('isMalicious', False) or \
-                       analysis_result.get('threat', {}).get('summary', {}).get('isMalicious', False)
+        # Determine malicious status from multiple sources
+        is_malicious = (
+            analysis_result.get('summary', {}).get('isMalicious', False) or
+            analysis_result.get('threat', {}).get('summary', {}).get('isMalicious', False) or
+            risk_score >= 70 or  # Critical risk score
+            risk_level in ['Critical', 'High'] or  # High/Critical risk level
+            'MALICIOUS' in str(analysis_result.get('summary', {}).get('verdict', '')).upper() or
+            analysis_result.get('iocInvestigation', {}).get('summary', {}).get('maliciousIOCs', 0) > 0
+        )
+
+        # Determine status text based on risk
+        if is_malicious:
+            status_text = 'MALICIOUS'
+        elif risk_score >= 40:
+            status_text = 'SUSPICIOUS'
+        else:
+            status_text = 'CLEAN'
 
         risk_data = [
             ['Risk Score:', f"{risk_score}/100"],
             ['Risk Level:', risk_level],
-            ['Status:', 'MALICIOUS' if is_malicious else 'CLEAN'],
+            ['Status:', status_text],
         ]
+
+        # Status color based on text
+        status_color = colors.green
+        if status_text == 'MALICIOUS':
+            status_color = colors.red
+        elif status_text == 'SUSPICIOUS':
+            status_color = colors.orange
 
         risk_table = Table(risk_data, colWidths=[1.5*inch, 5*inch])
         risk_table.setStyle(TableStyle([
@@ -317,7 +338,7 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
             ('FONTSIZE', (0, 0), (-1, -1), 12),
             ('TEXTCOLOR', (1, 0), (1, 0), risk_color),
             ('TEXTCOLOR', (1, 1), (1, 1), risk_color),
-            ('TEXTCOLOR', (1, 2), (1, 2), colors.red if is_malicious else colors.green),
+            ('TEXTCOLOR', (1, 2), (1, 2), status_color),
             ('FONTNAME', (1, 0), (1, -1), 'Helvetica-Bold'),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
         ]))
