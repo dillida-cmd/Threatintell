@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, lazy, Suspense } from 'react'
 import {
   Upload, FileSearch, Shield, AlertTriangle, Mail, FileText, Table,
   QrCode, Terminal, Camera, Globe, Link, Code, Package, Download, Key, X, ZoomIn
@@ -7,6 +7,9 @@ import { analyzeFile } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
 import { defangUrl, defangIp, defangDomain, defangEmail } from '../utils/defang'
+
+// Lazy load the attack flow diagram for better performance
+const AttackFlowDiagram = lazy(() => import('../components/AttackFlowDiagram'))
 
 const MAX_FILE_SIZE = 15 * 1024 * 1024 // 15MB
 
@@ -1222,6 +1225,11 @@ function SandboxResultsView({ analysis, riskScore }: { analysis: any; riskScore:
       {riskReasons.length > 0 && (
         <RiskReasonsView riskReasons={riskReasons} />
       )}
+
+      {/* Attack Flow Diagram - Visual representation of malware behavior */}
+      <Suspense fallback={<div className="card"><LoadingSpinner message="Loading attack flow diagram..." /></div>}>
+        <AttackFlowDiagram analysis={analysis} />
+      </Suspense>
 
       {/* Execution Screenshots */}
       {screenshots.length > 0 && (
