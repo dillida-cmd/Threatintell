@@ -18,9 +18,18 @@ import re
 import uuid
 import base64
 import signal
+import math
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from urllib.parse import urlparse
+
+# PE analysis
+try:
+    import pefile
+    PE_ANALYSIS_AVAILABLE = True
+except ImportError:
+    PE_ANALYSIS_AVAILABLE = False
 
 # Configuration
 SANDBOX_DIR = os.path.join(os.path.dirname(__file__), 'sandbox')
@@ -230,10 +239,11 @@ class SandboxConfig:
         bwrap = caps.get('bubblewrap', {}).get('available', False)
         docker = caps.get('docker', {}).get('available', False)
 
+        wine_available = caps.get('wine', {}).get('available', False)
         return {
             'scripts': bwrap or docker,
             'windows_scripts': (bwrap or docker),  # Partial support via interpreters
-            'executables': docker and caps.get('wine', {}).get('available', False),
+            'executables': (bwrap or docker) and wine_available,
             'documents': docker and caps.get('libreoffice', {}).get('available', False),
             'pdfs': bwrap or docker,
             'urls': caps.get('chromium', {}).get('available', False),
@@ -369,6 +379,211 @@ class IOCCollector:
 
 
 # =============================================================================
+# Threat Map - MITRE ATT&CK Mapping
+# =============================================================================
+
+class ThreatMap:
+    """Categorize and visualize malware behaviors with MITRE ATT&CK mappings"""
+
+    categories = {
+        'network': {'icon': '🌐', 'title': 'Network Activity'},
+        'filesystem': {'icon': '📁', 'title': 'File System'},
+        'registry': {'icon': '🔑', 'title': 'Registry'},
+        'process': {'icon': '⚙️', 'title': 'Process Activity'},
+        'persistence': {'icon': '🔄', 'title': 'Persistence'},
+        'evasion': {'icon': '🛡️', 'title': 'Defense Evasion'},
+        'discovery': {'icon': '🔍', 'title': 'Discovery'},
+        'credential': {'icon': '🔐', 'title': 'Credential Access'}
+    }
+
+    # MITRE ATT&CK technique mappings for suspicious behaviors
+    technique_mappings = {
+        # Process Injection - T1055
+        'VirtualAlloc': {'technique': 'T1055', 'name': 'Process Injection', 'category': 'evasion', 'severity': 'high'},
+        'VirtualAllocEx': {'technique': 'T1055', 'name': 'Process Injection', 'category': 'evasion', 'severity': 'high'},
+        'VirtualProtect': {'technique': 'T1055', 'name': 'Process Injection', 'category': 'evasion', 'severity': 'high'},
+        'VirtualProtectEx': {'technique': 'T1055', 'name': 'Process Injection', 'category': 'evasion', 'severity': 'high'},
+        'WriteProcessMemory': {'technique': 'T1055', 'name': 'Process Injection', 'category': 'process', 'severity': 'critical'},
+        'CreateRemoteThread': {'technique': 'T1055', 'name': 'Process Injection', 'category': 'process', 'severity': 'critical'},
+        'NtUnmapViewOfSection': {'technique': 'T1055.012', 'name': 'Process Hollowing', 'category': 'evasion', 'severity': 'critical'},
+
+        # Boot/Logon Autostart - T1547
+        'RegSetValueEx': {'technique': 'T1547', 'name': 'Boot/Logon Autostart', 'category': 'persistence', 'severity': 'high'},
+        'RegSetValueExA': {'technique': 'T1547', 'name': 'Boot/Logon Autostart', 'category': 'persistence', 'severity': 'high'},
+        'RegSetValueExW': {'technique': 'T1547', 'name': 'Boot/Logon Autostart', 'category': 'persistence', 'severity': 'high'},
+        'RegCreateKeyEx': {'technique': 'T1547', 'name': 'Boot/Logon Autostart', 'category': 'registry', 'severity': 'medium'},
+
+        # Application Layer Protocol - T1071
+        'InternetConnect': {'technique': 'T1071', 'name': 'Application Layer Protocol', 'category': 'network', 'severity': 'medium'},
+        'InternetConnectA': {'technique': 'T1071', 'name': 'Application Layer Protocol', 'category': 'network', 'severity': 'medium'},
+        'InternetConnectW': {'technique': 'T1071', 'name': 'Application Layer Protocol', 'category': 'network', 'severity': 'medium'},
+        'HttpOpenRequest': {'technique': 'T1071', 'name': 'Application Layer Protocol', 'category': 'network', 'severity': 'medium'},
+        'HttpSendRequest': {'technique': 'T1071', 'name': 'Application Layer Protocol', 'category': 'network', 'severity': 'medium'},
+        'URLDownloadToFile': {'technique': 'T1071', 'name': 'Application Layer Protocol', 'category': 'network', 'severity': 'high'},
+
+        # Dynamic Resolution - T1027 (Obfuscated Files)
+        'GetProcAddress': {'technique': 'T1027', 'name': 'Obfuscated Files/Dynamic Resolution', 'category': 'evasion', 'severity': 'low'},
+        'LoadLibraryA': {'technique': 'T1027', 'name': 'Obfuscated Files/Dynamic Resolution', 'category': 'evasion', 'severity': 'low'},
+        'LoadLibraryW': {'technique': 'T1027', 'name': 'Obfuscated Files/Dynamic Resolution', 'category': 'evasion', 'severity': 'low'},
+        'LoadLibraryExA': {'technique': 'T1027', 'name': 'Obfuscated Files/Dynamic Resolution', 'category': 'evasion', 'severity': 'low'},
+        'LoadLibraryExW': {'technique': 'T1027', 'name': 'Obfuscated Files/Dynamic Resolution', 'category': 'evasion', 'severity': 'low'},
+
+        # Anti-Debugging - T1622
+        'IsDebuggerPresent': {'technique': 'T1622', 'name': 'Debugger Evasion', 'category': 'evasion', 'severity': 'medium'},
+        'CheckRemoteDebuggerPresent': {'technique': 'T1622', 'name': 'Debugger Evasion', 'category': 'evasion', 'severity': 'medium'},
+        'NtQueryInformationProcess': {'technique': 'T1622', 'name': 'Debugger Evasion', 'category': 'evasion', 'severity': 'medium'},
+
+        # File Manipulation - T1070
+        'DeleteFileA': {'technique': 'T1070.004', 'name': 'File Deletion', 'category': 'evasion', 'severity': 'low'},
+        'DeleteFileW': {'technique': 'T1070.004', 'name': 'File Deletion', 'category': 'evasion', 'severity': 'low'},
+
+        # Process Creation - T1059
+        'CreateProcess': {'technique': 'T1059', 'name': 'Command Execution', 'category': 'process', 'severity': 'medium'},
+        'CreateProcessA': {'technique': 'T1059', 'name': 'Command Execution', 'category': 'process', 'severity': 'medium'},
+        'CreateProcessW': {'technique': 'T1059', 'name': 'Command Execution', 'category': 'process', 'severity': 'medium'},
+        'ShellExecute': {'technique': 'T1059', 'name': 'Command Execution', 'category': 'process', 'severity': 'medium'},
+        'ShellExecuteA': {'technique': 'T1059', 'name': 'Command Execution', 'category': 'process', 'severity': 'medium'},
+        'ShellExecuteW': {'technique': 'T1059', 'name': 'Command Execution', 'category': 'process', 'severity': 'medium'},
+        'WinExec': {'technique': 'T1059', 'name': 'Command Execution', 'category': 'process', 'severity': 'medium'},
+
+        # System Discovery - T1082
+        'GetSystemInfo': {'technique': 'T1082', 'name': 'System Information Discovery', 'category': 'discovery', 'severity': 'low'},
+        'GetVersionEx': {'technique': 'T1082', 'name': 'System Information Discovery', 'category': 'discovery', 'severity': 'low'},
+        'GetComputerName': {'technique': 'T1082', 'name': 'System Information Discovery', 'category': 'discovery', 'severity': 'low'},
+
+        # Credential Access - T1003
+        'LsaRetrievePrivateData': {'technique': 'T1003', 'name': 'OS Credential Dumping', 'category': 'credential', 'severity': 'critical'},
+        'CredEnumerate': {'technique': 'T1555', 'name': 'Credentials from Password Stores', 'category': 'credential', 'severity': 'high'},
+
+        # Screen Capture - T1113
+        'BitBlt': {'technique': 'T1113', 'name': 'Screen Capture', 'category': 'discovery', 'severity': 'medium'},
+        'GetDC': {'technique': 'T1113', 'name': 'Screen Capture', 'category': 'discovery', 'severity': 'low'},
+
+        # Clipboard - T1115
+        'GetClipboardData': {'technique': 'T1115', 'name': 'Clipboard Data', 'category': 'discovery', 'severity': 'medium'},
+        'SetClipboardData': {'technique': 'T1115', 'name': 'Clipboard Data', 'category': 'discovery', 'severity': 'low'},
+
+        # Keylogging - T1056.001
+        'SetWindowsHookEx': {'technique': 'T1056.001', 'name': 'Keylogging', 'category': 'credential', 'severity': 'high'},
+        'GetAsyncKeyState': {'technique': 'T1056.001', 'name': 'Keylogging', 'category': 'credential', 'severity': 'medium'},
+        'GetKeyState': {'technique': 'T1056.001', 'name': 'Keylogging', 'category': 'credential', 'severity': 'low'},
+    }
+
+    def __init__(self):
+        self.behaviors = {cat: [] for cat in self.categories}
+
+    def add_behavior(self, category: str, behavior: str, api: str = None,
+                     technique: str = None, severity: str = 'medium', details: str = None):
+        """Add a behavior to the threat map"""
+        if category not in self.behaviors:
+            category = 'process'  # Default category
+
+        entry = {
+            'behavior': behavior,
+            'severity': severity
+        }
+        if api:
+            entry['api'] = api
+        if technique:
+            entry['technique'] = technique
+        if details:
+            entry['details'] = details
+
+        # Avoid duplicates
+        if entry not in self.behaviors[category]:
+            self.behaviors[category].append(entry)
+
+    def analyze_imports(self, imports: List[Dict]) -> List[Dict]:
+        """Analyze PE imports and map to MITRE techniques"""
+        risk_reasons = []
+
+        for dll_entry in imports:
+            dll_name = dll_entry.get('dll', '').lower()
+            for func in dll_entry.get('functions', []):
+                func_name = func.get('name', '')
+                if func_name in self.technique_mappings:
+                    mapping = self.technique_mappings[func_name]
+                    self.add_behavior(
+                        category=mapping['category'],
+                        behavior=f"{mapping['name']} via {func_name}",
+                        api=func_name,
+                        technique=mapping['technique'],
+                        severity=mapping['severity']
+                    )
+                    risk_reasons.append({
+                        'category': 'Suspicious Import',
+                        'description': f'{func_name} can be used for {mapping["name"]}',
+                        'severity': mapping['severity'],
+                        'technique': f"{mapping['technique']} - {mapping['name']}",
+                        'source': f'{dll_name}!{func_name}'
+                    })
+
+        return risk_reasons
+
+    def analyze_sections(self, sections: List[Dict]) -> List[Dict]:
+        """Analyze PE sections for suspicious characteristics"""
+        risk_reasons = []
+
+        for section in sections:
+            name = section.get('name', '')
+            entropy = section.get('entropy', 0)
+            chars = section.get('characteristics', [])
+
+            # Check for executable and writable sections (RWX)
+            if 'EXECUTE' in chars and 'WRITE' in chars:
+                self.add_behavior(
+                    category='evasion',
+                    behavior='Executable section with write permission',
+                    technique='T1027',
+                    severity='medium',
+                    details=f'Section: {name}'
+                )
+                risk_reasons.append({
+                    'category': 'Suspicious Section',
+                    'description': f'Section {name} has both EXECUTE and WRITE permissions (RWX)',
+                    'severity': 'medium',
+                    'technique': 'T1027 - Obfuscated Files or Information'
+                })
+
+            # Check for high entropy (packed/encrypted)
+            if entropy > 7.0:
+                self.add_behavior(
+                    category='evasion',
+                    behavior='High entropy section (possibly packed/encrypted)',
+                    technique='T1027',
+                    severity='high',
+                    details=f'Section: {name}, Entropy: {entropy:.2f}'
+                )
+                risk_reasons.append({
+                    'category': 'Packed/Encrypted',
+                    'description': f'Section {name} has high entropy ({entropy:.2f}) indicating packing or encryption',
+                    'severity': 'high',
+                    'technique': 'T1027 - Obfuscated Files or Information'
+                })
+
+            # Check for unusual section names
+            if section.get('unusual'):
+                self.add_behavior(
+                    category='evasion',
+                    behavior=f'Unusual section name: {name}',
+                    technique='T1027',
+                    severity='low'
+                )
+
+        return risk_reasons
+
+    def to_dict(self) -> Dict:
+        """Convert threat map to dictionary for JSON output"""
+        return {cat: behaviors for cat, behaviors in self.behaviors.items() if behaviors}
+
+    @classmethod
+    def get_severity_score(cls, severity: str) -> int:
+        """Get numeric score for severity level"""
+        scores = {'critical': 25, 'high': 15, 'medium': 10, 'low': 5}
+        return scores.get(severity, 5)
+
+
+# =============================================================================
 # Bubblewrap Backend
 # =============================================================================
 
@@ -380,8 +595,53 @@ class BubblewrapBackend:
         self.timeout = min(timeout, MAX_TIMEOUT)
         self.work_dir = os.path.join(session_dir, 'work')
         self.output_dir = os.path.join(session_dir, 'output')
+        self.screenshots_dir = os.path.join(session_dir, 'screenshots')
         os.makedirs(self.work_dir, exist_ok=True)
         os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(self.screenshots_dir, exist_ok=True)
+
+    def _capture_screenshots(self, display_id: str = None, count: int = 3, interval: float = 2.0) -> List[str]:
+        """
+        Capture screenshots during execution.
+        Returns list of base64-encoded PNG images.
+        """
+        screenshots = []
+
+        # Check if import (ImageMagick) is available
+        import_path = shutil.which('import')
+        if not import_path:
+            return screenshots
+
+        for i in range(count):
+            time.sleep(interval)
+            screenshot_path = os.path.join(self.screenshots_dir, f'screenshot_{i}.png')
+
+            try:
+                # Capture using ImageMagick's import
+                cmd = ['import', '-window', 'root', screenshot_path]
+                if display_id:
+                    cmd = ['env', f'DISPLAY={display_id}'] + cmd
+
+                proc = subprocess.run(cmd, capture_output=True, timeout=5)
+
+                if proc.returncode == 0 and os.path.exists(screenshot_path):
+                    # Read and encode screenshot
+                    with open(screenshot_path, 'rb') as f:
+                        screenshots.append(base64.b64encode(f.read()).decode('utf-8'))
+            except subprocess.TimeoutExpired:
+                pass
+            except Exception:
+                pass
+
+        return screenshots
+
+    def _capture_screenshots_async(self, display_id: str = None, count: int = 3,
+                                    interval: float = 2.0, results_list: List = None):
+        """Async wrapper for screenshot capture to run in background thread"""
+        if results_list is None:
+            results_list = []
+        captured = self._capture_screenshots(display_id, count, interval)
+        results_list.extend(captured)
 
     def _build_bwrap_args(self, command: List[str], allow_network: bool = False) -> List[str]:
         """Build bubblewrap command arguments"""
@@ -618,6 +878,187 @@ class BubblewrapBackend:
 
         return result
 
+    def execute_executable(self, exe_path: str, strace_enabled: bool = True,
+                           capture_screenshots: bool = True) -> Dict:
+        """Execute a Windows executable using Wine in sandbox"""
+        result = {
+            'success': False,
+            'stdout': '',
+            'stderr': '',
+            'strace_output': '',
+            'exit_code': -1,
+            'execution_time': 0,
+            'error': None,
+            'screenshots': [],
+        }
+
+        # Check if Wine is available
+        caps = _config.detect_capabilities()
+        if not caps.get('wine', {}).get('available'):
+            result['error'] = 'Wine is not available for executable analysis'
+            return result
+
+        # Copy executable to work directory
+        exe_name = os.path.basename(exe_path)
+        sandbox_exe = os.path.join(self.work_dir, exe_name)
+        shutil.copy2(exe_path, sandbox_exe)
+
+        # Find Wine binary (use wine64 directly to avoid shell wrapper)
+        wine_binary = '/usr/lib/wine/wine64'
+        if not os.path.exists(wine_binary):
+            wine_binary = '/usr/lib/wine/wine'
+        if not os.path.exists(wine_binary):
+            wine_binary = '/usr/bin/wine'
+
+        # Build Wine command
+        wine_command = [wine_binary, f'/sandbox/{exe_name}']
+
+        # Create writable Wine prefix in work directory
+        wine_prefix = os.path.join(self.work_dir, '.wine')
+        os.makedirs(wine_prefix, exist_ok=True)
+
+        # Build bwrap args - order matters!
+        args = [
+            'bwrap',
+            '--unshare-all',
+            '--die-with-parent',
+            '--new-session',
+        ]
+
+        # Filesystem isolation - bind necessary directories
+        bind_dirs = [
+            ('/usr', '/usr'),
+            ('/lib', '/lib'),
+            ('/bin', '/bin'),
+            ('/sbin', '/sbin'),
+        ]
+
+        optional_dirs = [
+            '/lib64',
+            '/lib32',
+            '/etc/alternatives',
+            '/etc/ld.so.cache',
+            '/etc/ld.so.conf',
+            '/etc/ld.so.conf.d',
+            '/etc/fonts',  # For Wine fontconfig
+        ]
+
+        for src, dest in bind_dirs:
+            if os.path.exists(src):
+                args.extend(['--ro-bind', src, dest])
+
+        for dir_path in optional_dirs:
+            if os.path.exists(dir_path):
+                args.extend(['--ro-bind', dir_path, dir_path])
+
+        # Wine requires its own directories
+        wine_dirs = [
+            '/opt/wine-stable',
+            '/opt/wine',
+        ]
+        for wine_dir in wine_dirs:
+            if os.path.exists(wine_dir):
+                args.extend(['--ro-bind', wine_dir, wine_dir])
+
+        # Working directory and Wine prefix
+        args.extend([
+            '--bind', self.work_dir, '/sandbox',
+            '--bind', self.output_dir, '/output',
+            '--bind', wine_prefix, '/sandbox/.wine',
+        ])
+
+        # Temporary filesystem and special mounts
+        args.extend([
+            '--tmpfs', '/tmp',
+            '--tmpfs', '/var/tmp',
+            '--tmpfs', '/run',
+            '--tmpfs', '/sys',
+            '--proc', '/proc',
+            '--dev', '/dev',
+        ])
+
+        # Environment and final options
+        args.extend([
+            '--cap-drop', 'ALL',
+            '--hostname', 'sandbox',
+            '--chdir', '/sandbox',
+            '--setenv', 'WINEPREFIX', '/sandbox/.wine',
+            '--setenv', 'WINEDEBUG', '-all',
+            '--setenv', 'DISPLAY', '',
+            '--setenv', 'PATH', '/usr/bin:/bin:/usr/lib/wine',
+        ])
+
+        # Add strace if enabled
+        if strace_enabled and caps.get('strace', {}).get('available'):
+            command = [
+                'strace', '-f', '-o', '/output/strace.log',
+                '-e', 'trace=file,process,network',
+            ] + wine_command
+        else:
+            command = wine_command
+
+        args.extend(command)
+
+        start_time = datetime.now()
+
+        # Start screenshot capture in background thread if enabled
+        screenshot_results = []
+        screenshot_thread = None
+        if capture_screenshots:
+            # Calculate screenshot intervals based on timeout
+            num_screenshots = min(3, max(1, self.timeout // 10))
+            interval = max(2.0, self.timeout / (num_screenshots + 1))
+
+            screenshot_thread = threading.Thread(
+                target=self._capture_screenshots_async,
+                args=(None, num_screenshots, interval, screenshot_results),
+                daemon=True
+            )
+            screenshot_thread.start()
+
+        try:
+            # Use timeout only, apply prlimit inside if needed
+            timeout_args = ['timeout', '--signal=KILL', str(self.timeout)] + args
+
+            proc = subprocess.run(
+                timeout_args,
+                capture_output=True,
+                timeout=self.timeout + 5,
+                cwd=self.session_dir,
+            )
+
+            result['stdout'] = proc.stdout.decode('utf-8', errors='replace')[:50000]
+            result['stderr'] = proc.stderr.decode('utf-8', errors='replace')[:50000]
+            result['exit_code'] = proc.returncode
+            # Wine returns various exit codes, consider it successful if it ran
+            result['success'] = proc.returncode != -9
+
+        except subprocess.TimeoutExpired:
+            result['error'] = 'Execution timed out'
+            result['exit_code'] = -9
+        except Exception as e:
+            result['error'] = str(e)
+
+        result['execution_time'] = (datetime.now() - start_time).total_seconds()
+
+        # Wait for screenshot thread to complete (with timeout)
+        if screenshot_thread and screenshot_thread.is_alive():
+            screenshot_thread.join(timeout=5)
+
+        # Add captured screenshots to result
+        result['screenshots'] = screenshot_results
+
+        # Read strace output
+        strace_file = os.path.join(self.output_dir, 'strace.log')
+        if os.path.exists(strace_file):
+            try:
+                with open(strace_file, 'r', errors='replace') as f:
+                    result['strace_output'] = f.read()[:100000]
+            except Exception:
+                pass
+
+        return result
+
 
 # =============================================================================
 # Docker Backend (for when Docker is available)
@@ -694,6 +1135,63 @@ class DockerBackend:
 
         except subprocess.TimeoutExpired:
             # Kill container
+            subprocess.run(['docker', 'kill', self.container_name], capture_output=True)
+            result['error'] = 'Execution timed out'
+            result['exit_code'] = -9
+        except Exception as e:
+            result['error'] = str(e)
+
+        result['execution_time'] = (datetime.now() - start_time).total_seconds()
+        return result
+
+    def execute_executable(self, exe_path: str, strace_enabled: bool = False, image: str = 'scottyhardy/docker-wine:latest') -> Dict:
+        """Execute a Windows executable using Wine in Docker"""
+        result = {
+            'success': False,
+            'stdout': '',
+            'stderr': '',
+            'exit_code': -1,
+            'execution_time': 0,
+            'error': None,
+        }
+
+        # Copy executable to work directory
+        exe_name = os.path.basename(exe_path)
+        sandbox_exe = os.path.join(self.work_dir, exe_name)
+        shutil.copy2(exe_path, sandbox_exe)
+
+        # Docker command with Wine image
+        docker_args = [
+            'docker', 'run',
+            '--rm',
+            '--name', self.container_name,
+            '--network', 'none',
+            '--memory', f'{MEMORY_LIMIT_MB}m',
+            '--cpus', '0.5',
+            '-e', 'WINEDEBUG=-all',
+            '-e', 'DISPLAY=',
+            '-v', f'{self.work_dir}:/sandbox:ro',
+            '-v', f'{self.output_dir}:/output',
+            '-w', '/sandbox',
+            image,
+            'wine', f'/sandbox/{exe_name}'
+        ]
+
+        start_time = datetime.now()
+        try:
+            proc = subprocess.run(
+                docker_args,
+                capture_output=True,
+                timeout=self.timeout + 10,
+            )
+
+            result['stdout'] = proc.stdout.decode('utf-8', errors='replace')[:50000]
+            result['stderr'] = proc.stderr.decode('utf-8', errors='replace')[:50000]
+            result['exit_code'] = proc.returncode
+            # Wine returns various exit codes, consider it successful if it ran
+            result['success'] = proc.returncode != -9
+
+        except subprocess.TimeoutExpired:
             subprocess.run(['docker', 'kill', self.container_name], capture_output=True)
             result['error'] = 'Execution timed out'
             result['exit_code'] = -9
@@ -793,6 +1291,38 @@ class SandboxSession:
             elif file_type == 'pdf':
                 result['execution'] = self._analyze_pdf(file_path)
 
+            elif file_type == 'executable':
+                # Static PE analysis (always performed)
+                pe_analysis = self._analyze_pe(file_path)
+                result['peAnalysis'] = pe_analysis
+
+                # Update file analysis with PE-specific info if available
+                if pe_analysis.get('isPE'):
+                    result['fileAnalysis']['fileType'] = pe_analysis.get('basicProperties', {}).get('fileType', 'executable')
+                    result['fileAnalysis']['magic'] = pe_analysis.get('basicProperties', {}).get('magic', '')
+                    result['fileAnalysis']['imphash'] = pe_analysis.get('basicProperties', {}).get('imphash', '')
+
+                # Check if dynamic execution is supported
+                caps = _config.detect_capabilities()
+                supported = caps.get('supported_types', {}).get('executables', False)
+
+                if not supported:
+                    result['execution'] = {
+                        'success': False,
+                        'error': 'Dynamic analysis requires Wine (and Docker for full support). Static PE analysis completed.',
+                        'staticOnly': True
+                    }
+                else:
+                    # Disable strace for executables (Wine+strace is very slow)
+                    exec_result = self.backend.execute_executable(file_path, strace_enabled=False)
+                    result['execution'] = exec_result
+
+                    # Extract IOCs from execution output
+                    self.ioc_collector.extract_from_text(exec_result.get('stdout', ''))
+                    self.ioc_collector.extract_from_text(exec_result.get('stderr', ''))
+                    if exec_result.get('strace_output'):
+                        self.ioc_collector.extract_from_strace(exec_result['strace_output'])
+
             else:
                 result['execution'] = {
                     'success': False,
@@ -805,6 +1335,9 @@ class SandboxSession:
             # Calculate risk score
             result['riskScore'], result['riskLevel'] = self._calculate_risk_score(result)
 
+            # Generate human-readable summary
+            result['summary'] = self._generate_summary(result)
+
         except Exception as e:
             result['status'] = 'error'
             result['error'] = str(e)
@@ -812,6 +1345,196 @@ class SandboxSession:
         self.status = 'completed'
         self.results = result
         return result
+
+    def _generate_summary(self, result: Dict) -> Dict:
+        """Generate a human-readable summary of the analysis"""
+        file_info = result.get('fileAnalysis', {})
+        execution = result.get('execution', {})
+        iocs = result.get('iocs', {})
+        pe_analysis = result.get('peAnalysis', {})
+        risk_score = result.get('riskScore', 0)
+        risk_level = result.get('riskLevel', 'Unknown')
+
+        # File type descriptions
+        type_descriptions = {
+            'executable': 'Windows Executable (PE)',
+            'script': 'Script file',
+            'bash_script': 'Bash/Shell script',
+            'python_script': 'Python script',
+            'javascript': 'JavaScript file',
+            'pdf': 'PDF document',
+            'document': 'Office document',
+            'unknown': 'Unknown file type'
+        }
+
+        file_type = file_info.get('detectedType', 'unknown')
+        file_type_desc = type_descriptions.get(file_type, file_type)
+
+        # Use PE analysis type if available
+        if pe_analysis.get('isPE'):
+            file_type_desc = pe_analysis.get('basicProperties', {}).get('fileType', file_type_desc)
+
+        # Build findings list
+        findings = []
+        behaviors = []
+
+        # Add PE analysis findings
+        if pe_analysis.get('isPE'):
+            header = pe_analysis.get('header', {})
+            findings.append(f"Target: {header.get('targetMachine', 'Unknown')}")
+            findings.append(f"Compiled: {header.get('compilationTimestamp', 'Unknown')}")
+            findings.append(f"Sections: {header.get('numberOfSections', 0)}")
+
+            # Add PE detections
+            for detection in pe_analysis.get('detections', []):
+                behaviors.append(detection)
+
+            # Check for packing
+            packed = pe_analysis.get('signatures', {}).get('packed', {})
+            if packed.get('detected'):
+                behaviors.append(f"Packer detected: {packed.get('name', 'Unknown')}")
+
+            # Check imports count
+            total_imports = sum(len(i.get('functions', [])) for i in pe_analysis.get('imports', []))
+            if total_imports > 0:
+                findings.append(f"Imports: {len(pe_analysis.get('imports', []))} DLLs, {total_imports} functions")
+
+        # Check execution status
+        if execution.get('success'):
+            exec_time = execution.get('execution_time', 0)
+            exit_code = execution.get('exit_code', -1)
+
+            if exit_code == 0:
+                findings.append(f"Program executed successfully in {exec_time:.1f} seconds")
+            else:
+                findings.append(f"Program exited with code {exit_code} after {exec_time:.1f} seconds")
+
+            # Analyze stdout/stderr for behaviors
+            stdout = execution.get('stdout', '')
+            stderr = execution.get('stderr', '')
+            output = stdout + stderr
+
+            # Check for common behaviors
+            if 'network' in output.lower() or 'connect' in output.lower():
+                behaviors.append("Attempted network connection")
+            if 'registry' in output.lower():
+                behaviors.append("Registry access detected")
+            if 'file not found' in output.lower() or 'cannot be run' in output.lower():
+                behaviors.append("File execution failed (missing dependencies)")
+            if 'permission denied' in output.lower():
+                behaviors.append("Permission issues encountered")
+            if 'syswow64' in output.lower() or 'wine32' in output.lower():
+                behaviors.append("32-bit subsystem required (wine32 not installed)")
+
+        elif execution.get('error'):
+            findings.append(f"Execution failed: {execution.get('error')}")
+
+        # Analyze IOCs
+        ioc_summary = iocs.get('summary', {})
+        total_ips = ioc_summary.get('totalIPs', 0)
+        total_urls = ioc_summary.get('totalURLs', 0)
+        total_domains = ioc_summary.get('totalDomains', 0)
+
+        if total_ips > 0:
+            findings.append(f"Found {total_ips} IP address(es) in output")
+            behaviors.append("Network indicators detected")
+        if total_urls > 0:
+            findings.append(f"Found {total_urls} URL(s) in output")
+            behaviors.append("Web communication indicators")
+        if total_domains > 0:
+            # Filter out common Windows system files from domain count
+            real_domains = [d for d in iocs.get('domains', [])
+                          if not d.endswith('.exe') and not d.endswith('.dll')]
+            if real_domains:
+                findings.append(f"Found {len(real_domains)} domain(s): {', '.join(real_domains[:3])}")
+
+        # Risk assessment text
+        risk_assessments = {
+            'Critical': "This file exhibits highly suspicious behavior and should be considered dangerous. Do not execute on production systems.",
+            'High': "This file shows multiple concerning indicators. Exercise extreme caution and investigate further before allowing.",
+            'Medium': "This file has some suspicious characteristics. Review the detailed findings before making a decision.",
+            'Low': "This file shows minor suspicious indicators. Likely safe but verify the source.",
+            'Clean': "No significant malicious indicators detected. File appears to be safe based on dynamic analysis."
+        }
+
+        # Build verdict
+        if risk_level == 'Critical':
+            verdict = "MALICIOUS - High confidence"
+        elif risk_level == 'High':
+            verdict = "SUSPICIOUS - Likely malicious"
+        elif risk_level == 'Medium':
+            verdict = "SUSPICIOUS - Requires investigation"
+        elif risk_level == 'Low':
+            verdict = "LIKELY SAFE - Minor concerns"
+        else:
+            verdict = "CLEAN - No threats detected"
+
+        # Format file size
+        file_size = file_info.get('fileSize', 0)
+        if file_size >= 1024 * 1024:
+            size_str = f"{file_size / (1024*1024):.2f} MB"
+        elif file_size >= 1024:
+            size_str = f"{file_size / 1024:.2f} KB"
+        else:
+            size_str = f"{file_size} bytes"
+
+        # Build file info with PE details if available
+        file_info_summary = {
+            'name': file_info.get('fileName', 'Unknown'),
+            'type': file_type_desc,
+            'size': size_str,
+            'md5': file_info.get('hashes', {}).get('md5', 'N/A'),
+            'sha1': file_info.get('hashes', {}).get('sha1', 'N/A'),
+            'sha256': file_info.get('hashes', {}).get('sha256', 'N/A')
+        }
+
+        # Add PE-specific info
+        if pe_analysis.get('isPE'):
+            pe_props = pe_analysis.get('basicProperties', {})
+            pe_header = pe_analysis.get('header', {})
+            file_info_summary['imphash'] = pe_props.get('imphash', 'N/A')
+            file_info_summary['magic'] = pe_props.get('magic', '')
+            file_info_summary['targetMachine'] = pe_header.get('targetMachine', 'Unknown')
+            file_info_summary['compilationTimestamp'] = pe_header.get('compilationTimestamp', 'Unknown')
+            file_info_summary['entryPoint'] = pe_header.get('entryPoint', 'N/A')
+            file_info_summary['subsystem'] = pe_header.get('subsystem', 'Unknown')
+
+        return {
+            'verdict': verdict,
+            'riskAssessment': risk_assessments.get(risk_level, "Analysis complete."),
+            'fileInfo': file_info_summary,
+            'findings': findings if findings else ["No significant activity detected during execution"],
+            'behaviors': behaviors if behaviors else ["No suspicious behaviors observed"],
+            'recommendations': self._get_recommendations(risk_level, file_type, behaviors)
+        }
+
+    def _get_recommendations(self, risk_level: str, file_type: str, behaviors: List[str]) -> List[str]:
+        """Generate recommendations based on analysis results"""
+        recommendations = []
+
+        if risk_level in ('Critical', 'High'):
+            recommendations.append("Do NOT execute this file on any production system")
+            recommendations.append("Submit to additional malware analysis services (VirusTotal, Any.Run)")
+            recommendations.append("Block the associated hashes in your security tools")
+            recommendations.append("Check if this file was distributed to other systems")
+        elif risk_level == 'Medium':
+            recommendations.append("Investigate the source of this file")
+            recommendations.append("Run additional scans before allowing execution")
+            recommendations.append("Monitor for similar files in your environment")
+        elif risk_level == 'Low':
+            recommendations.append("Verify the file source is trusted")
+            recommendations.append("Consider running in an isolated environment first")
+        else:
+            recommendations.append("File appears safe for normal use")
+            recommendations.append("Always verify software sources before installation")
+
+        # Add type-specific recommendations
+        if file_type == 'executable':
+            recommendations.append("Check digital signature if available")
+        if 'network' in ' '.join(behaviors).lower():
+            recommendations.append("Review firewall logs for related connections")
+
+        return recommendations[:5]  # Limit to 5 recommendations
 
     def _detect_file_type(self, file_path: str) -> str:
         """Detect file type from magic bytes and extension"""
@@ -859,6 +1582,421 @@ class SandboxSession:
             pass
         return hashes
 
+    def _analyze_pe(self, file_path: str) -> Dict:
+        """Analyze PE (Windows executable) file - VT-style analysis"""
+        if not PE_ANALYSIS_AVAILABLE:
+            return {'error': 'PE analysis not available (pefile not installed)'}
+
+        result = {
+            'isPE': False,
+            'basicProperties': {},
+            'header': {},
+            'sections': [],
+            'imports': [],
+            'exports': [],
+            'resources': [],
+            'signatures': {},
+            'detections': []
+        }
+
+        try:
+            pe = pefile.PE(file_path)
+            result['isPE'] = True
+
+            # Read raw file for hash calculations
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
+
+            # Basic Properties - Multiple hash types
+            result['basicProperties'] = {
+                'md5': hashlib.md5(file_data).hexdigest(),
+                'sha1': hashlib.sha1(file_data).hexdigest(),
+                'sha256': hashlib.sha256(file_data).hexdigest(),
+                'imphash': pe.get_imphash() if hasattr(pe, 'get_imphash') else None,
+                'fileSize': len(file_data),
+                'fileSizeFormatted': self._format_file_size(len(file_data)),
+            }
+
+            # Machine type mapping
+            machine_types = {
+                0x14c: 'x86 (i386)',
+                0x8664: 'x64 (AMD64)',
+                0x1c0: 'ARM',
+                0xaa64: 'ARM64',
+                0x200: 'IA64',
+            }
+
+            # Subsystem mapping
+            subsystems = {
+                0: 'Unknown',
+                1: 'Native',
+                2: 'Windows GUI',
+                3: 'Windows Console',
+                5: 'OS/2 Console',
+                7: 'POSIX Console',
+                9: 'Windows CE',
+                10: 'EFI Application',
+                11: 'EFI Boot Service Driver',
+                12: 'EFI Runtime Driver',
+                13: 'EFI ROM',
+                14: 'Xbox',
+                16: 'Windows Boot Application',
+            }
+
+            # Header information
+            machine = pe.FILE_HEADER.Machine
+            timestamp = pe.FILE_HEADER.TimeDateStamp
+            compilation_time = datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S UTC') if timestamp else 'Unknown'
+
+            result['header'] = {
+                'targetMachine': machine_types.get(machine, f'Unknown (0x{machine:x})'),
+                'machineHex': f'0x{machine:x}',
+                'compilationTimestamp': compilation_time,
+                'compilationTimestampRaw': timestamp,
+                'entryPoint': hex(pe.OPTIONAL_HEADER.AddressOfEntryPoint),
+                'entryPointRaw': pe.OPTIONAL_HEADER.AddressOfEntryPoint,
+                'imageBase': hex(pe.OPTIONAL_HEADER.ImageBase),
+                'subsystem': subsystems.get(pe.OPTIONAL_HEADER.Subsystem, 'Unknown'),
+                'subsystemRaw': pe.OPTIONAL_HEADER.Subsystem,
+                'numberOfSections': pe.FILE_HEADER.NumberOfSections,
+                'characteristics': self._parse_pe_characteristics(pe.FILE_HEADER.Characteristics),
+                'dllCharacteristics': self._parse_dll_characteristics(pe.OPTIONAL_HEADER.DllCharacteristics),
+            }
+
+            # Determine file type
+            is_dll = pe.FILE_HEADER.Characteristics & 0x2000
+            is_64bit = machine == 0x8664
+            subsystem_name = subsystems.get(pe.OPTIONAL_HEADER.Subsystem, 'Unknown')
+
+            if is_dll:
+                file_type = f"Win{'64' if is_64bit else '32'} DLL"
+            else:
+                file_type = f"Win{'64' if is_64bit else '32'} EXE"
+
+            result['basicProperties']['fileType'] = file_type
+            result['basicProperties']['magic'] = f"PE{'64' if is_64bit else '32'}+ executable ({subsystem_name}) {'x86-64' if is_64bit else 'x86'}, for MS Windows"
+
+            # Sections analysis
+            for section in pe.sections:
+                section_name = section.Name.decode('utf-8', errors='replace').rstrip('\x00')
+                section_data = section.get_data()
+                entropy = self._calculate_entropy(section_data)
+
+                section_info = {
+                    'name': section_name,
+                    'virtualAddress': hex(section.VirtualAddress),
+                    'virtualSize': section.Misc_VirtualSize,
+                    'rawSize': section.SizeOfRawData,
+                    'entropy': round(entropy, 2),
+                    'md5': hashlib.md5(section_data).hexdigest() if section_data else None,
+                    'characteristics': self._parse_section_characteristics(section.Characteristics),
+                }
+
+                # Flag suspicious sections
+                if entropy > 7.0:
+                    section_info['suspicious'] = 'High entropy (possibly packed/encrypted)'
+                    result['detections'].append(f"High entropy section: {section_name} ({entropy:.2f})")
+                if section_name not in ['.text', '.data', '.rdata', '.rsrc', '.reloc', '.pdata', '.bss', '.edata', '.idata', '.tls']:
+                    section_info['unusual'] = True
+                    if not section_name.startswith('.'):
+                        result['detections'].append(f"Unusual section name: {section_name}")
+
+                result['sections'].append(section_info)
+
+            # Imports analysis
+            if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT'):
+                for entry in pe.DIRECTORY_ENTRY_IMPORT:
+                    dll_name = entry.dll.decode('utf-8', errors='replace')
+                    functions = []
+                    for imp in entry.imports:
+                        if imp.name:
+                            func_name = imp.name.decode('utf-8', errors='replace')
+                            functions.append({
+                                'name': func_name,
+                                'address': hex(imp.address) if imp.address else None,
+                                'ordinal': imp.ordinal
+                            })
+                            # Flag suspicious imports
+                            suspicious_funcs = ['VirtualAlloc', 'VirtualProtect', 'WriteProcessMemory',
+                                              'CreateRemoteThread', 'NtUnmapViewOfSection', 'IsDebuggerPresent',
+                                              'GetProcAddress', 'LoadLibraryA', 'LoadLibraryW']
+                            if func_name in suspicious_funcs:
+                                result['detections'].append(f"Suspicious import: {dll_name}!{func_name}")
+                        else:
+                            functions.append({
+                                'name': f'Ordinal {imp.ordinal}',
+                                'ordinal': imp.ordinal
+                            })
+
+                    result['imports'].append({
+                        'dll': dll_name,
+                        'functions': functions,
+                        'functionCount': len(functions)
+                    })
+
+            # Exports analysis
+            if hasattr(pe, 'DIRECTORY_ENTRY_EXPORT'):
+                for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+                    if exp.name:
+                        result['exports'].append({
+                            'name': exp.name.decode('utf-8', errors='replace'),
+                            'ordinal': exp.ordinal,
+                            'address': hex(exp.address) if exp.address else None
+                        })
+
+            # Resources analysis (limited)
+            if hasattr(pe, 'DIRECTORY_ENTRY_RESOURCE'):
+                resource_types = {
+                    1: 'Cursor', 2: 'Bitmap', 3: 'Icon', 4: 'Menu', 5: 'Dialog',
+                    6: 'String', 7: 'FontDir', 8: 'Font', 9: 'Accelerator',
+                    10: 'RCData', 11: 'MessageTable', 14: 'IconGroup', 16: 'Version',
+                    24: 'Manifest'
+                }
+                for resource_type in pe.DIRECTORY_ENTRY_RESOURCE.entries:
+                    type_name = resource_types.get(resource_type.id, f'Type_{resource_type.id}')
+                    if hasattr(resource_type, 'directory'):
+                        count = len(resource_type.directory.entries)
+                        result['resources'].append({
+                            'type': type_name,
+                            'typeId': resource_type.id,
+                            'count': count
+                        })
+
+            # Check for common packers/protectors
+            result['signatures']['packed'] = self._detect_packer(pe, file_data)
+
+            # Extract suspicious strings for reverse shell / malware detection
+            result['suspiciousStrings'] = self._extract_suspicious_strings(file_data)
+
+            # Add detections based on suspicious strings
+            for finding in result['suspiciousStrings'].get('findings', []):
+                result['detections'].append(finding)
+
+            pe.close()
+
+        except pefile.PEFormatError as e:
+            result['error'] = f'Invalid PE format: {str(e)}'
+        except Exception as e:
+            result['error'] = f'PE analysis error: {str(e)}'
+
+        return result
+
+    def _calculate_entropy(self, data: bytes) -> float:
+        """Calculate Shannon entropy of data"""
+        if not data:
+            return 0.0
+        entropy = 0
+        for x in range(256):
+            p_x = data.count(bytes([x])) / len(data)
+            if p_x > 0:
+                entropy -= p_x * math.log2(p_x)
+        return entropy
+
+    def _format_file_size(self, size: int) -> str:
+        """Format file size in human-readable format"""
+        if size >= 1024 * 1024:
+            return f"{size / (1024*1024):.2f} MB ({size:,} bytes)"
+        elif size >= 1024:
+            return f"{size / 1024:.2f} KB ({size:,} bytes)"
+        return f"{size} bytes"
+
+    def _parse_pe_characteristics(self, chars: int) -> List[str]:
+        """Parse PE characteristics flags"""
+        flags = []
+        char_map = {
+            0x0001: 'RELOCS_STRIPPED',
+            0x0002: 'EXECUTABLE_IMAGE',
+            0x0004: 'LINE_NUMS_STRIPPED',
+            0x0008: 'LOCAL_SYMS_STRIPPED',
+            0x0020: 'LARGE_ADDRESS_AWARE',
+            0x0100: '32BIT_MACHINE',
+            0x0200: 'DEBUG_STRIPPED',
+            0x2000: 'DLL',
+        }
+        for flag, name in char_map.items():
+            if chars & flag:
+                flags.append(name)
+        return flags
+
+    def _parse_dll_characteristics(self, chars: int) -> List[str]:
+        """Parse DLL characteristics flags"""
+        flags = []
+        char_map = {
+            0x0020: 'HIGH_ENTROPY_VA',
+            0x0040: 'DYNAMIC_BASE (ASLR)',
+            0x0080: 'FORCE_INTEGRITY',
+            0x0100: 'NX_COMPAT (DEP)',
+            0x0200: 'NO_ISOLATION',
+            0x0400: 'NO_SEH',
+            0x0800: 'NO_BIND',
+            0x1000: 'APPCONTAINER',
+            0x2000: 'WDM_DRIVER',
+            0x4000: 'GUARD_CF',
+            0x8000: 'TERMINAL_SERVER_AWARE',
+        }
+        for flag, name in char_map.items():
+            if chars & flag:
+                flags.append(name)
+        return flags
+
+    def _parse_section_characteristics(self, chars: int) -> List[str]:
+        """Parse section characteristics"""
+        flags = []
+        char_map = {
+            0x00000020: 'CODE',
+            0x00000040: 'INITIALIZED_DATA',
+            0x00000080: 'UNINITIALIZED_DATA',
+            0x02000000: 'DISCARDABLE',
+            0x04000000: 'NOT_CACHED',
+            0x08000000: 'NOT_PAGED',
+            0x10000000: 'SHARED',
+            0x20000000: 'EXECUTE',
+            0x40000000: 'READ',
+            0x80000000: 'WRITE',
+        }
+        for flag, name in char_map.items():
+            if chars & flag:
+                flags.append(name)
+        return flags
+
+    def _detect_packer(self, pe, file_data: bytes) -> Dict:
+        """Detect common packers/protectors"""
+        result = {'detected': False, 'name': None, 'indicators': []}
+
+        # Check section names for packer signatures
+        packer_sections = {
+            'UPX': ['UPX0', 'UPX1', 'UPX2', '.UPX'],
+            'ASPack': ['.aspack', '.adata'],
+            'PECompact': ['pec1', 'pec2', 'PEC2'],
+            'Themida': ['.themida'],
+            'VMProtect': ['.vmp0', '.vmp1', '.vmp2'],
+            'Enigma': ['.enigma1', '.enigma2'],
+        }
+
+        for section in pe.sections:
+            section_name = section.Name.decode('utf-8', errors='replace').rstrip('\x00')
+            for packer, signatures in packer_sections.items():
+                if section_name in signatures:
+                    result['detected'] = True
+                    result['name'] = packer
+                    result['indicators'].append(f'Section name: {section_name}')
+
+        # Check for high entropy (indicates packing)
+        total_entropy = 0
+        for section in pe.sections:
+            section_data = section.get_data()
+            if section_data:
+                entropy = self._calculate_entropy(section_data)
+                if entropy > 7.5:
+                    result['indicators'].append(f'High entropy section ({entropy:.2f})')
+                total_entropy += entropy
+
+        avg_entropy = total_entropy / len(pe.sections) if pe.sections else 0
+        if avg_entropy > 7.0:
+            result['indicators'].append(f'High average entropy ({avg_entropy:.2f})')
+            if not result['detected']:
+                result['detected'] = True
+                result['name'] = 'Unknown packer/encryption'
+
+        return result
+
+    def _extract_suspicious_strings(self, file_data: bytes) -> Dict:
+        """Extract suspicious strings that indicate malware behavior"""
+        result = {
+            'networkLibraries': [],
+            'suspiciousDlls': [],
+            'shellIndicators': [],
+            'embeddedIPs': [],
+            'embeddedUrls': [],
+            'findings': []
+        }
+
+        # Extract printable strings (min 4 chars)
+        strings = re.findall(b'[\x20-\x7e]{4,}', file_data)
+        string_set = set(s.decode('ascii', errors='ignore').lower() for s in strings)
+
+        # Network/Socket libraries (reverse shell indicators)
+        network_libs = ['ws2_32', 'wsock32', 'wininet', 'winhttp', 'urlmon', 'mswsock']
+        for lib in network_libs:
+            if any(lib in s for s in string_set):
+                result['networkLibraries'].append(lib)
+                result['findings'].append(f'Dynamic network library: {lib} (possible reverse shell)')
+
+        # Suspicious DLLs loaded dynamically
+        suspicious_dlls = {
+            'ntdll': 'NT API access (evasion/injection)',
+            'kernel32': 'Core Windows API',
+            'advapi32': 'Registry/Security functions',
+            'crypt32': 'Cryptographic operations',
+            'shell32': 'Shell execution',
+            'user32': 'User interface/keylogging',
+        }
+        for dll, desc in suspicious_dlls.items():
+            # Look for dll string that's not just in import table
+            if any(dll in s and '.dll' in s for s in string_set):
+                result['suspiciousDlls'].append({'dll': dll, 'description': desc})
+
+        # Shell/Command execution indicators
+        shell_indicators = ['cmd.exe', 'powershell', 'cmd /c', '/bin/sh', '/bin/bash',
+                          'wscript', 'cscript', 'mshta', 'rundll32', 'regsvr32']
+        for indicator in shell_indicators:
+            if any(indicator in s for s in string_set):
+                result['shellIndicators'].append(indicator)
+                result['findings'].append(f'Shell execution indicator: {indicator}')
+
+        # Extract embedded IPs (plaintext)
+        ip_pattern = re.compile(rb'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})')
+        ips = ip_pattern.findall(file_data)
+        for ip in set(ips):
+            ip_str = ip.decode()
+            # Filter out common non-IOC IPs
+            if not ip_str.startswith('0.') and not ip_str.startswith('127.') and ip_str != '255.255.255.255':
+                result['embeddedIPs'].append(ip_str)
+                result['findings'].append(f'Embedded IP address: {ip_str}')
+
+        # Extract sockaddr_in structures (shellcode C2 config)
+        # Format: 02 00 [port BE] [IP bytes] - AF_INET + port + IP
+        import struct
+        for i in range(len(file_data) - 8):
+            # Look for AF_INET (0x0002) followed by port and IP
+            if file_data[i:i+2] == b'\x02\x00':
+                port_bytes = file_data[i+2:i+4]
+                ip_bytes = file_data[i+4:i+8]
+
+                # Port is big-endian (network byte order)
+                port = struct.unpack(">H", port_bytes)[0]
+
+                # Check if this looks like a valid C2 config
+                if port in range(1, 65536) and port != 0:
+                    ip = f"{ip_bytes[0]}.{ip_bytes[1]}.{ip_bytes[2]}.{ip_bytes[3]}"
+
+                    # Filter: valid IP range, not broadcast/multicast
+                    if (1 <= ip_bytes[0] <= 223 and
+                        ip_bytes[0] not in [127] and  # not localhost
+                        not (ip_bytes[0] == 169 and ip_bytes[1] == 254) and  # not link-local
+                        ip_bytes[3] != 0 and ip_bytes[3] != 255):  # not network/broadcast
+
+                        # Common reverse shell ports
+                        if port in [4444, 4443, 443, 80, 8080, 8443, 1234, 5555, 6666, 7777, 8888, 9999, 1337, 31337]:
+                            c2_str = f"{ip}:{port}"
+                            if c2_str not in result['embeddedIPs']:
+                                result['embeddedIPs'].append(c2_str)
+                                result['findings'].append(f'C2 callback: {c2_str} (sockaddr_in structure)')
+                                result['findings'].insert(0, f'REVERSE SHELL C2: {c2_str}')
+
+        # Check for common reverse shell patterns
+        if result['networkLibraries'] and (result['shellIndicators'] or
+            any('virtualprotect' in s or 'virtualalloc' in s for s in string_set)):
+            result['findings'].insert(0, 'LIKELY REVERSE SHELL: Network library + memory manipulation detected')
+
+        # Check for shellcode markers
+        shellcode_markers = ['payload', 'shellcode', 'meterpreter', 'beacon', 'cobalt']
+        for marker in shellcode_markers:
+            if any(marker in s for s in string_set):
+                result['findings'].append(f'Shellcode/payload marker: {marker}')
+
+        return result
+
     def _analyze_pdf(self, file_path: str) -> Dict:
         """Analyze PDF file for suspicious elements"""
         result = {
@@ -904,39 +2042,223 @@ class SandboxSession:
         return result
 
     def _calculate_risk_score(self, analysis_result: Dict) -> Tuple[int, str]:
-        """Calculate risk score based on analysis results"""
+        """Calculate risk score based on analysis results with detailed reasons"""
         score = 0
+        risk_reasons = []
+
+        # Get or create threat map
+        threat_map = analysis_result.get('_threat_map')
+        if not threat_map:
+            threat_map = ThreatMap()
 
         # Execution-based scoring
         execution = analysis_result.get('execution', {})
-        if execution.get('error'):
+        if execution.get('error') and not execution.get('staticOnly'):
             score += 10
+            risk_reasons.append({
+                'category': 'Execution Error',
+                'description': 'File failed to execute properly, may indicate anti-analysis techniques',
+                'severity': 'low',
+                'score_contribution': 10
+            })
 
         # IOC-based scoring
         iocs = analysis_result.get('iocs', {})
         if iocs.get('ips'):
-            score += len(iocs['ips']) * 5
+            ip_count = len(iocs['ips'])
+            contribution = min(ip_count * 5, 25)
+            score += contribution
+            if ip_count > 0:
+                risk_reasons.append({
+                    'category': 'Network IOCs',
+                    'description': f'{ip_count} IP address(es) found in execution output',
+                    'severity': 'medium' if ip_count > 2 else 'low',
+                    'score_contribution': contribution
+                })
+                threat_map.add_behavior('network', f'{ip_count} IP addresses contacted', severity='medium')
+
         if iocs.get('urls'):
-            score += len(iocs['urls']) * 3
+            url_count = len(iocs['urls'])
+            contribution = min(url_count * 3, 15)
+            score += contribution
+            if url_count > 0:
+                risk_reasons.append({
+                    'category': 'Network IOCs',
+                    'description': f'{url_count} URL(s) found in execution output',
+                    'severity': 'medium' if url_count > 3 else 'low',
+                    'score_contribution': contribution
+                })
+                threat_map.add_behavior('network', f'{url_count} URLs accessed', severity='medium')
+
         if iocs.get('domains'):
-            score += len(iocs['domains']) * 2
+            domain_count = len(iocs['domains'])
+            contribution = min(domain_count * 2, 10)
+            score += contribution
 
         # PDF-specific scoring
         if execution.get('hasJavaScript'):
             score += 30
+            risk_reasons.append({
+                'category': 'Malicious Content',
+                'description': 'PDF contains JavaScript which can be used for exploitation',
+                'severity': 'high',
+                'technique': 'T1204 - User Execution',
+                'score_contribution': 30
+            })
+            threat_map.add_behavior('evasion', 'JavaScript in PDF', technique='T1204', severity='high')
+
         if execution.get('hasAutoAction'):
             score += 25
+            risk_reasons.append({
+                'category': 'Auto-Execution',
+                'description': 'PDF has auto-open actions that execute without user interaction',
+                'severity': 'high',
+                'technique': 'T1204 - User Execution',
+                'score_contribution': 25
+            })
+            threat_map.add_behavior('evasion', 'Auto-open action in PDF', technique='T1204', severity='high')
+
         if execution.get('hasEmbeddedFiles'):
             score += 20
+            risk_reasons.append({
+                'category': 'Embedded Content',
+                'description': 'PDF contains embedded files that could be malicious',
+                'severity': 'medium',
+                'score_contribution': 20
+            })
+            threat_map.add_behavior('evasion', 'Embedded files in PDF', severity='medium')
 
         # Strace-based scoring (suspicious syscalls)
         strace = execution.get('strace_output', '')
         if 'connect(' in strace:
             score += 15
+            risk_reasons.append({
+                'category': 'Network Activity',
+                'description': 'Process attempted to establish network connections',
+                'severity': 'medium',
+                'technique': 'T1071 - Application Layer Protocol',
+                'score_contribution': 15
+            })
+            threat_map.add_behavior('network', 'Network connection attempts', technique='T1071', severity='medium')
+
         if 'execve(' in strace and strace.count('execve(') > 1:
+            exec_count = strace.count('execve(')
             score += 20
+            risk_reasons.append({
+                'category': 'Process Creation',
+                'description': f'Process spawned {exec_count} child processes',
+                'severity': 'medium',
+                'technique': 'T1059 - Command and Scripting Interpreter',
+                'score_contribution': 20
+            })
+            threat_map.add_behavior('process', f'{exec_count} child processes created', technique='T1059', severity='medium')
+
         if '/etc/passwd' in strace or '/etc/shadow' in strace:
             score += 40
+            risk_reasons.append({
+                'category': 'Credential Access',
+                'description': 'Process attempted to access system credential files',
+                'severity': 'critical',
+                'technique': 'T1003 - OS Credential Dumping',
+                'score_contribution': 40
+            })
+            threat_map.add_behavior('credential', 'Access to credential files', technique='T1003', severity='critical')
+
+        # PE Analysis scoring
+        pe_analysis = analysis_result.get('peAnalysis', {})
+        if pe_analysis.get('isPE'):
+            # Analyze imports with ThreatMap
+            pe_risk_reasons = threat_map.analyze_imports(pe_analysis.get('imports', []))
+            for reason in pe_risk_reasons:
+                score += ThreatMap.get_severity_score(reason.get('severity', 'low'))
+            risk_reasons.extend(pe_risk_reasons)
+
+            # Analyze sections
+            section_reasons = threat_map.analyze_sections(pe_analysis.get('sections', []))
+            for reason in section_reasons:
+                score += ThreatMap.get_severity_score(reason.get('severity', 'low'))
+            risk_reasons.extend(section_reasons)
+
+            # Check for packer detection
+            packed = pe_analysis.get('signatures', {}).get('packed', {})
+            if packed.get('detected'):
+                packer_name = packed.get('name', 'Unknown')
+                score += 20
+                risk_reasons.append({
+                    'category': 'Packing/Obfuscation',
+                    'description': f'File is packed/protected with {packer_name}',
+                    'severity': 'high',
+                    'technique': 'T1027 - Obfuscated Files or Information',
+                    'score_contribution': 20
+                })
+                threat_map.add_behavior('evasion', f'Packed with {packer_name}', technique='T1027', severity='high')
+
+            # Check detections list
+            for detection in pe_analysis.get('detections', []):
+                if 'Suspicious import' in detection:
+                    score += 5
+                elif 'High entropy' in detection:
+                    score += 10
+                elif 'Unusual section' in detection:
+                    score += 5
+                elif 'reverse shell' in detection.lower():
+                    score += 30
+                elif 'network library' in detection.lower():
+                    score += 15
+                elif 'Embedded IP' in detection:
+                    score += 10
+                elif 'Shell execution' in detection:
+                    score += 15
+
+            # Process suspicious strings for threat map
+            suspicious_strings = pe_analysis.get('suspiciousStrings', {})
+
+            # Network libraries indicate potential reverse shell
+            for lib in suspicious_strings.get('networkLibraries', []):
+                threat_map.add_behavior('network', f'Dynamic load: {lib}', technique='T1071', severity='high')
+                risk_reasons.append({
+                    'category': 'Network Capability',
+                    'description': f'Dynamically loads {lib} (Winsock) - common in reverse shells',
+                    'severity': 'high',
+                    'technique': 'T1071 - Application Layer Protocol'
+                })
+                score += 15
+
+            # Shell indicators
+            for shell in suspicious_strings.get('shellIndicators', []):
+                threat_map.add_behavior('process', f'Shell access: {shell}', technique='T1059', severity='high')
+                risk_reasons.append({
+                    'category': 'Command Execution',
+                    'description': f'References {shell} - may spawn shell processes',
+                    'severity': 'high',
+                    'technique': 'T1059 - Command and Scripting Interpreter'
+                })
+                score += 10
+
+            # Embedded IPs
+            for ip in suspicious_strings.get('embeddedIPs', []):
+                threat_map.add_behavior('network', f'Hardcoded IP: {ip}', technique='T1095', severity='critical')
+                risk_reasons.append({
+                    'category': 'C2 Indicator',
+                    'description': f'Embedded IP address: {ip} - potential C2 server',
+                    'severity': 'critical',
+                    'technique': 'T1095 - Non-Application Layer Protocol'
+                })
+                score += 20
+
+            # Check for reverse shell pattern
+            if suspicious_strings.get('networkLibraries') and (
+                suspicious_strings.get('shellIndicators') or
+                any('VirtualProtect' in f.get('name', '') for imp in pe_analysis.get('imports', []) for f in imp.get('functions', []))
+            ):
+                threat_map.add_behavior('network', 'REVERSE SHELL PATTERN DETECTED', technique='T1059.001', severity='critical')
+                risk_reasons.insert(0, {
+                    'category': 'Reverse Shell',
+                    'description': 'File exhibits reverse shell characteristics: network library + memory manipulation or shell access',
+                    'severity': 'critical',
+                    'technique': 'T1059.001 - PowerShell / Command Shell'
+                })
+                score += 25
 
         # Cap score at 100
         score = min(score, 100)
@@ -952,6 +2274,10 @@ class SandboxSession:
             level = 'Low'
         else:
             level = 'Clean'
+
+        # Store risk reasons and threat map in result
+        analysis_result['riskReasons'] = risk_reasons
+        analysis_result['threatMap'] = threat_map.to_dict()
 
         return score, level
 
@@ -1350,6 +2676,24 @@ class SandboxService:
             result['success'] = result.get('status') != 'error'
             result['filename'] = filename
             result['entryRef'] = entry_ref
+
+            # Build behavior summary for frontend stats
+            threat_map = result.get('threatMap', {})
+            risk_reasons = result.get('riskReasons', [])
+            iocs = result.get('iocs', {})
+            pe_analysis = result.get('peAnalysis', {})
+            suspicious_strings = pe_analysis.get('suspiciousStrings', {})
+
+            result['behaviorSummary'] = {
+                'processCount': len(threat_map.get('process', [])),
+                'fileOperations': len(pe_analysis.get('sections', [])),
+                'networkConnections': len(threat_map.get('network', [])) + len(suspicious_strings.get('embeddedIPs', [])),
+                'suspiciousActivities': len(risk_reasons),
+                'registryOperations': len(threat_map.get('registry', [])),
+                'evasionTechniques': len(threat_map.get('evasion', [])),
+                'credentialAccess': len(threat_map.get('credential', [])),
+                'iocCount': iocs.get('summary', {}).get('totalIPs', 0) + iocs.get('summary', {}).get('totalURLs', 0)
+            }
 
             # Store session results
             self._store_session(session, result)

@@ -878,12 +878,171 @@ function QrCodeResultsView({ analysis }: { analysis: any }) {
   )
 }
 
+// Threat Map View - Visual representation of MITRE ATT&CK behaviors
+function ThreatMapView({ threatMap }: { threatMap: any }) {
+  if (!threatMap || Object.keys(threatMap).length === 0) return null
+
+  const categoryMeta: Record<string, { icon: string; title: string; color: string }> = {
+    'network': { icon: '🌐', title: 'Network Activity', color: 'blue' },
+    'filesystem': { icon: '📁', title: 'File System', color: 'green' },
+    'registry': { icon: '🔑', title: 'Registry', color: 'yellow' },
+    'process': { icon: '⚙️', title: 'Process Activity', color: 'purple' },
+    'persistence': { icon: '🔄', title: 'Persistence', color: 'orange' },
+    'evasion': { icon: '🛡️', title: 'Defense Evasion', color: 'red' },
+    'discovery': { icon: '🔍', title: 'Discovery', color: 'cyan' },
+    'credential': { icon: '🔐', title: 'Credential Access', color: 'pink' }
+  }
+
+  const severityColors: Record<string, string> = {
+    'critical': 'bg-red-500/20 border-red-500/50 text-red-400',
+    'high': 'bg-orange-500/20 border-orange-500/50 text-orange-400',
+    'medium': 'bg-yellow-500/20 border-yellow-500/50 text-yellow-400',
+    'low': 'bg-green-500/20 border-green-500/50 text-green-400'
+  }
+
+  return (
+    <div className="card">
+      <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+        <Shield className="h-5 w-5 text-primary-500" />
+        Threat Map
+        <span className="text-xs text-gray-500 font-normal ml-2">MITRE ATT&CK Mapping</span>
+      </h3>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {Object.entries(threatMap).map(([category, behaviors]) => {
+          const meta = categoryMeta[category] || { icon: '❓', title: category, color: 'gray' }
+          const behaviorList = behaviors as any[]
+          if (!behaviorList || behaviorList.length === 0) return null
+
+          return (
+            <div key={category} className="bg-dark-500 rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-xl">{meta.icon}</span>
+                <span className="text-white font-semibold text-sm">{meta.title}</span>
+                <span className="badge badge-neutral text-xs">{behaviorList.length}</span>
+              </div>
+              <div className="space-y-2">
+                {behaviorList.map((b: any, i: number) => (
+                  <div
+                    key={i}
+                    className={`p-2 rounded border text-xs ${severityColors[b.severity] || severityColors['medium']}`}
+                  >
+                    <p className="font-medium">{b.behavior}</p>
+                    {b.technique && (
+                      <span className="text-xs opacity-75 block mt-1">{b.technique}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// Risk Reasons View - Detailed explanation of why file is risky
+function RiskReasonsView({ riskReasons }: { riskReasons: any[] }) {
+  if (!riskReasons || riskReasons.length === 0) return null
+
+  const [expanded, setExpanded] = useState(false)
+  const displayReasons = expanded ? riskReasons : riskReasons.slice(0, 5)
+
+  const severityColors: Record<string, string> = {
+    'critical': 'border-l-red-500 bg-red-500/10',
+    'high': 'border-l-orange-500 bg-orange-500/10',
+    'medium': 'border-l-yellow-500 bg-yellow-500/10',
+    'low': 'border-l-green-500 bg-green-500/10'
+  }
+
+  const severityBadgeColors: Record<string, string> = {
+    'critical': 'badge-danger',
+    'high': 'badge-warning',
+    'medium': 'badge-info',
+    'low': 'badge-success'
+  }
+
+  return (
+    <div className="card">
+      <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+        <AlertTriangle className="h-5 w-5 text-orange-500" />
+        Risk Analysis
+        <span className="badge badge-neutral">{riskReasons.length} factors</span>
+      </h3>
+      <div className="space-y-3">
+        {displayReasons.map((reason, i) => (
+          <div
+            key={i}
+            className={`border-l-4 pl-4 py-3 pr-4 rounded-r-lg ${severityColors[reason.severity] || severityColors['medium']}`}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-white font-semibold text-sm">{reason.category}</span>
+                  <span className={`badge text-xs ${severityBadgeColors[reason.severity] || 'badge-info'}`}>
+                    {reason.severity}
+                  </span>
+                  {reason.score_contribution && (
+                    <span className="text-gray-500 text-xs">+{reason.score_contribution} pts</span>
+                  )}
+                </div>
+                <p className="text-gray-300 text-sm">{reason.description}</p>
+                {reason.technique && (
+                  <p className="text-primary-400 text-xs mt-1 font-mono">{reason.technique}</p>
+                )}
+                {reason.source && (
+                  <p className="text-gray-500 text-xs mt-1">Source: {reason.source}</p>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      {riskReasons.length > 5 && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="mt-4 text-primary-400 text-sm hover:text-primary-300 transition-colors"
+        >
+          {expanded ? 'Show less' : `Show ${riskReasons.length - 5} more...`}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// Screenshots View - Execution screenshots gallery
+function ExecutionScreenshotsView({ screenshots }: { screenshots: string[] }) {
+  if (!screenshots || screenshots.length === 0) return null
+
+  return (
+    <div className="card">
+      <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+        <Camera className="h-5 w-5 text-primary-500" />
+        Execution Screenshots ({screenshots.length})
+      </h3>
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        {screenshots.map((screenshot, i) => (
+          <ScreenshotThumbnail
+            key={i}
+            src={`data:image/png;base64,${screenshot}`}
+            alt={`Screenshot ${i + 1}`}
+            label={`T+${(i + 1) * 2}s`}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function SandboxResultsView({ analysis, riskScore }: { analysis: any; riskScore: number }) {
   const behavior = analysis.behaviorSummary || analysis.behavior_summary || {}
   const processTree = analysis.processTree || analysis.process_tree || []
   const network = analysis.networkConnections || analysis.network_connections || []
   const files = analysis.filesystemChanges || analysis.filesystem_changes || {}
   const iocs = analysis.extractedIocs || analysis.extracted_iocs || {}
+  const threatMap = analysis.threatMap || analysis.threat_map || {}
+  const riskReasons = analysis.riskReasons || analysis.risk_reasons || []
+  const screenshots = analysis.screenshots || analysis.execution?.screenshots || []
 
   return (
     <div className="space-y-6">
@@ -1001,6 +1160,21 @@ function SandboxResultsView({ analysis, riskScore }: { analysis: any; riskScore:
       {/* IOCs */}
       {(iocs.ips?.length > 0 || iocs.domains?.length > 0 || iocs.urls?.length > 0) && (
         <IocDisplay iocs={iocs} />
+      )}
+
+      {/* Threat Map - MITRE ATT&CK Visualization */}
+      {Object.keys(threatMap).length > 0 && (
+        <ThreatMapView threatMap={threatMap} />
+      )}
+
+      {/* Risk Reasons - Detailed explanations */}
+      {riskReasons.length > 0 && (
+        <RiskReasonsView riskReasons={riskReasons} />
+      )}
+
+      {/* Execution Screenshots */}
+      {screenshots.length > 0 && (
+        <ExecutionScreenshotsView screenshots={screenshots} />
       )}
     </div>
   )

@@ -17,7 +17,7 @@ import threading
 from email import policy
 from email.parser import BytesParser
 from datetime import datetime, timedelta
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote, urlunparse, quote
 
 # Import threat intelligence module
 try:
@@ -134,6 +134,70 @@ QR_EMAIL_PATTERN = re.compile(r'mailto:([^\s?]+)', re.IGNORECASE)
 QR_PHONE_PATTERN = re.compile(r'tel:([+\d\-\s]+)', re.IGNORECASE)
 QR_WIFI_PATTERN = re.compile(r'WIFI:([^;]*;)+', re.IGNORECASE)
 QR_VCARD_PATTERN = re.compile(r'BEGIN:VCARD', re.IGNORECASE)
+
+
+# ============================================================================
+# URL Normalization
+# ============================================================================
+
+def normalize_url_for_api(url: str) -> str:
+    """
+    Normalize URL handling percent-encoding properly.
+    Handles double-encoded URLs and ensures proper encoding for API calls.
+    """
+    if not url:
+        return url
+
+    try:
+        # Decode any double-encoding first (up to 3 levels)
+        decoded = url
+        for _ in range(3):
+            new_decoded = unquote(decoded)
+            if new_decoded == decoded:
+                break
+            decoded = new_decoded
+
+        # Parse the decoded URL
+        parsed = urlparse(decoded)
+
+        # If no scheme, assume https
+        scheme = parsed.scheme or 'https'
+        netloc = parsed.netloc
+
+        # Handle cases where URL was provided without scheme
+        if not netloc and parsed.path:
+            # Try to extract domain from path
+            path_parts = parsed.path.split('/', 1)
+            if '.' in path_parts[0]:
+                netloc = path_parts[0]
+                path = '/' + path_parts[1] if len(path_parts) > 1 else '/'
+            else:
+                path = parsed.path
+        else:
+            path = parsed.path or '/'
+
+        # Re-encode path and query properly
+        # Safe characters in path: unreserved + sub-delims + ':@/'
+        safe_path = quote(path, safe='/:@!$&\'()*+,;=-._~')
+
+        # Safe characters in query: unreserved + sub-delims + ':@/?'
+        safe_query = quote(parsed.query, safe='=&:@/?!$\'()*+,;-._~') if parsed.query else ''
+
+        # Reconstruct the URL
+        normalized = urlunparse((
+            scheme,
+            netloc,
+            safe_path,
+            parsed.params,
+            safe_query,
+            parsed.fragment
+        ))
+
+        return normalized
+
+    except Exception:
+        # If normalization fails, return original URL
+        return url
 
 
 # ============================================================================
@@ -2846,8 +2910,15 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                 self.send_json({'error': 'URL required'}, 400)
                 return
 
+            # Normalize URL to handle encoding issues
+            normalized_url = normalize_url_for_api(url)
+
             if THREAT_INTEL_AVAILABLE:
-                result = threat_intel.investigate_url(url)
+                result = threat_intel.investigate_url(normalized_url)
+                # Include original URL if different from normalized
+                if normalized_url != url:
+                    result['originalUrl'] = url
+                    result['normalizedUrl'] = normalized_url
                 self.send_json(result)
             else:
                 self.send_json({'error': 'Threat intelligence module not available'}, 503)
@@ -3402,6 +3473,30 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                 secret_key=secret_key,
                 timeout=timeout
             )
+            result['type'] = 'sandbox'
+
+            # Automatic threat intel lookup for file hash
+            if result.get('success') and THREAT_INTEL_AVAILABLE:
+                file_hashes = result.get('fileAnalysis', {}).get('hashes', {})
+                sha256 = file_hashes.get('sha256')
+                if sha256:
+                    ioc_investigation = investigate_iocs(hashes=[sha256], max_per_type=1)
+                    result['iocInvestigation'] = ioc_investigation
+
+                    # Update risk based on threat intel findings
+                    if ioc_investigation.get('summary', {}).get('maliciousIOCs', 0) > 0:
+                        # File is known malware - significantly increase risk
+                        current_risk = result.get('riskScore', 0)
+                        threat_risk = ioc_investigation['summary'].get('overallRiskScore', 0)
+                        result['riskScore'] = max(current_risk, threat_risk, 80)
+                        result['riskLevel'] = 'Critical' if result['riskScore'] >= 80 else 'High'
+
+                        # Add to summary findings
+                        if result.get('summary'):
+                            findings = ioc_investigation.get('summary', {}).get('findings', [])
+                            result['summary']['findings'].extend(findings)
+                            result['summary']['verdict'] = 'MALICIOUS - Known malware'
+                            result['summary']['riskAssessment'] = 'This file is identified as KNOWN MALWARE in threat intelligence databases. Do NOT execute under any circumstances.'
 
             # Store result if analysis was successful
             if result.get('success'):
@@ -3444,6 +3539,9 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                 self.send_json({'error': 'URL is required'}, 400)
                 return
 
+            # Normalize URL to handle encoding issues
+            normalized_url = normalize_url_for_api(url)
+
             secret_key = data.get('secretKey')
             if not secret_key:
                 self.send_json({'error': 'secretKey is required'}, 400)
@@ -3463,11 +3561,16 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             # Analyze URL in sandbox
             service = sandbox_service.get_service()
             result = service.analyze_url(
-                url=url,
+                url=normalized_url,
                 mode=mode,
                 secret_key=secret_key,
                 timeout=timeout
             )
+
+            # Include original URL if different from normalized
+            if normalized_url != url:
+                result['originalUrl'] = url
+                result['normalizedUrl'] = normalized_url
 
             # Store result if analysis was successful
             if result.get('success'):

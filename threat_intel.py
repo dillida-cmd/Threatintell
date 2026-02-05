@@ -1423,6 +1423,116 @@ def check_urlhaus_hash(file_hash: str) -> Dict:
 
 
 # =============================================================================
+# MalwareBazaar (abuse.ch) - No API key required
+# =============================================================================
+
+def check_malwarebazaar_hash(file_hash: str) -> Dict:
+    """Check file hash on MalwareBazaar"""
+    cache_key = f"malwarebazaar:hash:{file_hash}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    # MalwareBazaar requires Auth-Key (same as URLhaus/ThreatFox from abuse.ch)
+    api_key = get_api_key('urlhaus')  # Uses same auth.abuse.ch key
+    if not api_key:
+        api_key = get_api_key('threatfox')
+    if not api_key:
+        return {'error': 'Auth-Key not configured (get from https://auth.abuse.ch/)', 'source': 'malwarebazaar'}
+
+    api_url = "https://mb-api.abuse.ch/api/v1/"
+
+    # Determine hash type
+    if len(file_hash) == 64:
+        hash_param = 'sha256_hash'
+    elif len(file_hash) == 40:
+        hash_param = 'sha1_hash'
+    elif len(file_hash) == 32:
+        hash_param = 'md5_hash'
+    else:
+        return {'error': 'Invalid hash format (use MD5, SHA1, or SHA256)', 'source': 'malwarebazaar'}
+
+    data = urllib.parse.urlencode({
+        'query': 'get_info',
+        'hash': file_hash
+    }).encode()
+
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Auth-Key': api_key,
+        'User-Agent': 'ShieldTier-ThreatIntel/1.0'
+    }
+
+    response = make_request(api_url, headers=headers, method='POST', data=data)
+    if response:
+        if response.get('query_status') == 'ok':
+            sample = response.get('data', [{}])[0] if response.get('data') else {}
+            result = {
+                'source': 'malwarebazaar',
+                'found': True,
+                'hash': file_hash,
+                'sha256': sample.get('sha256_hash'),
+                'sha1': sample.get('sha1_hash'),
+                'md5': sample.get('md5_hash'),
+                'fileName': sample.get('file_name'),
+                'fileType': sample.get('file_type'),
+                'fileTypeMime': sample.get('file_type_mime'),
+                'fileSize': sample.get('file_size'),
+                'signature': sample.get('signature'),
+                'firstSeen': sample.get('first_seen'),
+                'lastSeen': sample.get('last_seen'),
+                'reporter': sample.get('reporter'),
+                'tags': sample.get('tags', []),
+                'malwareFamily': sample.get('signature'),
+                'deliveryMethod': sample.get('delivery_method'),
+                'intelligence': sample.get('intelligence', {}),
+                'originCountry': sample.get('origin_country'),
+                'imphash': sample.get('imphash'),
+                'tlsh': sample.get('tlsh'),
+                'ssdeep': sample.get('ssdeep'),
+                'vendorIntel': {}
+            }
+
+            # Extract vendor intelligence (AV detections)
+            vendor_intel = sample.get('vendor_intel', {})
+            if vendor_intel:
+                result['vendorIntel'] = {
+                    vendor: info.get('verdict', info.get('detection', 'Unknown'))
+                    for vendor, info in vendor_intel.items()
+                    if isinstance(info, dict)
+                }
+                result['detectionCount'] = len([v for v in result['vendorIntel'].values()
+                                                if v and v.lower() not in ('clean', 'unknown', 'n/a')])
+
+            # Extract YARA matches
+            yara_rules = sample.get('yara_rules', [])
+            if yara_rules:
+                result['yaraMatches'] = [
+                    {'rule': rule.get('rule_name'), 'author': rule.get('author')}
+                    for rule in yara_rules[:10]
+                ]
+
+            set_cached(cache_key, result)
+            return result
+
+        elif response.get('query_status') == 'hash_not_found':
+            result = {
+                'source': 'malwarebazaar',
+                'found': False,
+                'hash': file_hash,
+                'status': 'clean',
+                'message': 'Hash not found in MalwareBazaar database'
+            }
+            set_cached(cache_key, result)
+            return result
+
+        elif response.get('query_status') == 'illegal_hash':
+            return {'error': 'Invalid hash format', 'source': 'malwarebazaar'}
+
+    return {'error': 'No data returned', 'source': 'malwarebazaar'}
+
+
+# =============================================================================
 # ThreatFox (abuse.ch) - No API key required
 # =============================================================================
 
@@ -1896,17 +2006,20 @@ def investigate_hash(file_hash: str) -> Dict:
             'maliciousSources': 0,
             'riskScore': 0,
             'findings': []
-        }
+        },
+        'riskReasons': []
     }
 
     services = [
         ('virustotal', check_virustotal_hash),
+        ('malwarebazaar', check_malwarebazaar_hash),
         ('urlhaus', check_urlhaus_hash),
         ('alienvault_otx', check_alienvault_hash),
     ]
 
     for service_name, check_func in services:
-        if is_service_enabled(service_name) or service_name in ['urlhaus']:
+        # MalwareBazaar and URLhaus don't need API keys
+        if is_service_enabled(service_name) or service_name in ['urlhaus', 'malwarebazaar']:
             try:
                 result = check_func(file_hash)
                 if 'error' not in result:
@@ -1914,13 +2027,71 @@ def investigate_hash(file_hash: str) -> Dict:
                     results['summary']['totalSources'] += 1
 
                     if service_name == 'virustotal' and result.get('malicious', 0) > 0:
+                        detections = result.get('malicious', 0)
                         results['summary']['maliciousSources'] += 1
-                        results['summary']['findings'].append(f"VirusTotal: {result.get('malicious')} detections")
+                        results['summary']['findings'].append(f"VirusTotal: {detections} detections")
+                        # Add detailed risk reason
+                        results['riskReasons'].append({
+                            'category': 'Known Malware',
+                            'description': f'{detections} antivirus engines detect this file as malicious',
+                            'severity': 'critical' if detections >= 10 else 'high' if detections >= 5 else 'medium',
+                            'source': 'VirusTotal',
+                            'score_contribution': min(40, detections * 4)
+                        })
+
+                    elif service_name == 'malwarebazaar' and result.get('found'):
+                        results['summary']['maliciousSources'] += 1
+                        sig = result.get('signature') or result.get('malwareFamily') or 'Unknown'
+                        findings = f"MalwareBazaar: Known malware - {sig}"
+                        if result.get('tags'):
+                            findings += f" (tags: {', '.join(result.get('tags', [])[:3])})"
+                        results['summary']['findings'].append(findings)
+                        # Add detailed risk reason
+                        results['riskReasons'].append({
+                            'category': 'Known Malware',
+                            'description': f'File identified as {sig} in MalwareBazaar database',
+                            'severity': 'critical',
+                            'source': 'MalwareBazaar',
+                            'score_contribution': 40,
+                            'malwareFamily': sig,
+                            'tags': result.get('tags', [])[:5]
+                        })
+                        # Add YARA matches as additional reasons
+                        if result.get('yaraMatches'):
+                            for yara in result.get('yaraMatches', [])[:3]:
+                                results['riskReasons'].append({
+                                    'category': 'YARA Match',
+                                    'description': f'Matched YARA rule: {yara.get("rule", "Unknown")}',
+                                    'severity': 'high',
+                                    'source': 'MalwareBazaar',
+                                    'score_contribution': 15
+                                })
+
                     elif service_name == 'urlhaus' and int(result.get('urlCount', 0) or 0) > 0:
+                        url_count = int(result.get('urlCount', 0) or 0)
                         results['summary']['maliciousSources'] += 1
-                        results['summary']['findings'].append(f"URLhaus: Associated with {result.get('urlCount')} malicious URLs")
+                        results['summary']['findings'].append(f"URLhaus: Associated with {url_count} malicious URLs")
+                        # Add detailed risk reason
+                        results['riskReasons'].append({
+                            'category': 'Malware Distribution',
+                            'description': f'File associated with {url_count} malicious distribution URLs',
+                            'severity': 'high',
+                            'source': 'URLhaus',
+                            'score_contribution': 30
+                        })
+
                     elif service_name == 'alienvault_otx' and result.get('pulseCount', 0) > 0:
-                        results['summary']['findings'].append(f"AlienVault: {result.get('pulseCount')} threat pulses")
+                        pulse_count = result.get('pulseCount', 0)
+                        results['summary']['findings'].append(f"AlienVault: {pulse_count} threat pulses")
+                        # Add detailed risk reason
+                        results['riskReasons'].append({
+                            'category': 'Threat Intelligence',
+                            'description': f'Referenced in {pulse_count} threat intelligence pulses',
+                            'severity': 'medium' if pulse_count < 5 else 'high',
+                            'source': 'AlienVault OTX',
+                            'score_contribution': min(20, pulse_count * 4)
+                        })
+
             except Exception as e:
                 results['sources'][service_name] = {'error': str(e)}
 
