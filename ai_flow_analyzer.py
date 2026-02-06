@@ -11,6 +11,67 @@ from urllib.parse import urlparse
 import re
 
 
+def parse_strace_output(strace_output: str) -> Dict:
+    """Parse strace output to extract execution behavior"""
+    result = {
+        'processes': [],      # execve calls
+        'files_read': [],     # openat/read calls
+        'files_written': [],  # write calls
+        'network': [],        # socket/connect calls
+        'commands': [],       # shell commands executed
+    }
+
+    if not strace_output:
+        return result
+
+    seen_procs = set()
+    seen_files = set()
+
+    for line in strace_output.split('\n'):
+        # Process execution: execve("/bin/bash", ["/bin/bash", "script.sh"], ...)
+        if 'execve(' in line:
+            match = re.search(r'execve\("([^"]+)"', line)
+            if match:
+                cmd = match.group(1)
+                # Extract command name
+                cmd_name = cmd.split('/')[-1]
+                if cmd_name not in seen_procs and cmd_name not in ['bash', 'sh', 'dash']:
+                    seen_procs.add(cmd_name)
+                    result['processes'].append({
+                        'command': cmd_name,
+                        'path': cmd,
+                    })
+
+        # File operations: openat(AT_FDCWD, "/etc/passwd", O_RDONLY)
+        if 'openat(' in line and '= ' in line and '= -1' not in line:
+            match = re.search(r'openat\([^,]+,\s*"([^"]+)"', line)
+            if match:
+                filepath = match.group(1)
+                # Filter interesting files (not system libs)
+                if not any(skip in filepath for skip in ['/lib/', '/usr/lib/', '/proc/', '/sys/', 'ld.so', '.so.']):
+                    if filepath not in seen_files:
+                        seen_files.add(filepath)
+                        if 'O_WRONLY' in line or 'O_RDWR' in line or 'O_CREAT' in line:
+                            result['files_written'].append(filepath)
+                        else:
+                            result['files_read'].append(filepath)
+
+        # Network: socket() or connect()
+        if 'socket(' in line and 'AF_INET' in line:
+            result['network'].append({'type': 'socket', 'details': 'TCP/IP socket created'})
+        if 'connect(' in line and 'AF_INET' in line:
+            # Try to extract IP:port
+            match = re.search(r'sin_addr=inet_addr\("([^"]+)"\).*sin_port=htons\((\d+)\)', line)
+            if match:
+                result['network'].append({
+                    'type': 'connect',
+                    'ip': match.group(1),
+                    'port': match.group(2)
+                })
+
+    return result
+
+
 class AttackFlowAnalyzer:
     """Analyzes URL/sandbox results and generates detailed sequential attack flow"""
 
@@ -375,6 +436,80 @@ class AttackFlowAnalyzer:
         edges.append({'source': prev_node, 'target': exec_node, 'label': 'Execute', 'type': 'action'})
         prev_node = exec_node
         step += 1
+
+        # ===== STEP 4b: Parse strace for actual execution behavior =====
+        strace_output = analysis.get('execution', {}).get('strace_output', '')
+        if strace_output:
+            strace_data = parse_strace_output(strace_output)
+
+            # Show processes spawned
+            if strace_data.get('processes'):
+                for proc in strace_data['processes'][:3]:  # Limit to 3
+                    proc_node = self._generate_node_id()
+                    nodes.append({
+                        'id': proc_node,
+                        'type': 'process',
+                        'label': f"Run: {proc['command']}",
+                        'description': proc.get('path', '')[:40],
+                        'data': proc,
+                        'step': step,
+                        'severity': 'warning' if proc['command'] in ['curl', 'wget', 'nc', 'ncat', 'python', 'perl', 'ruby'] else 'info'
+                    })
+                    edges.append({'source': prev_node, 'target': proc_node, 'label': 'spawn', 'type': 'process'})
+                    prev_node = proc_node
+                    step += 1
+
+            # Show files read (interesting ones)
+            interesting_files = [f for f in strace_data.get('files_read', [])
+                               if any(x in f for x in ['/etc/', '/home/', '/root/', '/tmp/', 'passwd', 'shadow', 'hosts', '.ssh', '.bash'])]
+            if interesting_files:
+                file_node = self._generate_node_id()
+                nodes.append({
+                    'id': file_node,
+                    'type': 'file',
+                    'label': 'File Access',
+                    'description': ', '.join([f.split('/')[-1] for f in interesting_files[:3]]),
+                    'data': {'files': interesting_files[:5]},
+                    'step': step,
+                    'severity': 'warning' if any('passwd' in f or 'shadow' in f or '.ssh' in f for f in interesting_files) else 'info'
+                })
+                edges.append({'source': prev_node, 'target': file_node, 'label': 'read', 'type': 'file'})
+                prev_node = file_node
+                step += 1
+
+            # Show files written
+            if strace_data.get('files_written'):
+                write_node = self._generate_node_id()
+                nodes.append({
+                    'id': write_node,
+                    'type': 'file',
+                    'label': 'File Write',
+                    'description': ', '.join([f.split('/')[-1] for f in strace_data['files_written'][:3]]),
+                    'data': {'files': strace_data['files_written'][:5]},
+                    'step': step,
+                    'severity': 'high'
+                })
+                edges.append({'source': prev_node, 'target': write_node, 'label': 'write', 'type': 'file'})
+                prev_node = write_node
+                step += 1
+
+            # Show network connections from strace
+            network_conns = [n for n in strace_data.get('network', []) if n.get('type') == 'connect']
+            if network_conns:
+                for conn in network_conns[:2]:  # Limit to 2
+                    net_node = self._generate_node_id()
+                    nodes.append({
+                        'id': net_node,
+                        'type': 'c2',
+                        'label': 'Network Connect',
+                        'description': f"{conn.get('ip', '?')}:{conn.get('port', '?')}",
+                        'data': conn,
+                        'step': step,
+                        'severity': 'critical'
+                    })
+                    edges.append({'source': prev_node, 'target': net_node, 'label': 'connect', 'type': 'network'})
+                    prev_node = net_node
+                    step += 1
 
         # ===== STEP 5: Script-specific behavior (for non-PE files) =====
         # Get IOCs from the analysis
