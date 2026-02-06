@@ -376,7 +376,64 @@ class AttackFlowAnalyzer:
         prev_node = exec_node
         step += 1
 
-        # ===== STEP 5: DLL Loading (from files opened or execution dllLoads) =====
+        # ===== STEP 5: Script-specific behavior (for non-PE files) =====
+        # Get IOCs from the analysis
+        iocs = analysis.get('iocs', analysis.get('extractedIocs', {}))
+        ioc_ips = iocs.get('ips', [])
+        ioc_domains = iocs.get('domains', [])
+        ioc_urls = iocs.get('urls', [])
+
+        # For scripts: show network IOCs as C2/connection nodes
+        if not (pe_analysis and pe_analysis.get('isPE')):
+            # Show URLs found (potential C2/download)
+            if ioc_urls:
+                url_node = self._generate_node_id()
+                nodes.append({
+                    'id': url_node,
+                    'type': 'network',
+                    'label': 'Network Request',
+                    'description': ioc_urls[0][:40] + ('...' if len(ioc_urls[0]) > 40 else ''),
+                    'data': {'urls': ioc_urls[:5]},
+                    'step': step,
+                    'severity': 'high'
+                })
+                edges.append({'source': prev_node, 'target': url_node, 'label': 'HTTP Request', 'type': 'network'})
+                prev_node = url_node
+                step += 1
+
+            # Show IPs found (potential C2)
+            if ioc_ips:
+                ip_node = self._generate_node_id()
+                nodes.append({
+                    'id': ip_node,
+                    'type': 'c2',
+                    'label': 'C2 Connection',
+                    'description': ', '.join(ioc_ips[:3]),
+                    'data': {'ips': ioc_ips},
+                    'step': step,
+                    'severity': 'critical'
+                })
+                edges.append({'source': prev_node, 'target': ip_node, 'label': 'Connect', 'type': 'c2'})
+                prev_node = ip_node
+                step += 1
+
+            # Show domains found
+            if ioc_domains and not ioc_urls:  # Only if not already shown via URLs
+                domain_node = self._generate_node_id()
+                nodes.append({
+                    'id': domain_node,
+                    'type': 'dns',
+                    'label': 'DNS Lookup',
+                    'description': ', '.join(ioc_domains[:3]),
+                    'data': {'domains': ioc_domains},
+                    'step': step,
+                    'severity': 'warning'
+                })
+                edges.append({'source': prev_node, 'target': domain_node, 'label': 'Resolve', 'type': 'dns'})
+                prev_node = domain_node
+                step += 1
+
+        # ===== STEP 6: DLL Loading (from files opened or execution dllLoads) =====
         dlls_loaded = []
 
         # Check files opened for DLLs
