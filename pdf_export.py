@@ -898,6 +898,105 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
 
                 story.append(Spacer(1, 10))
 
+            # Attack Flow Diagram Data (DLLs, C2, APIs)
+            attack_flow = analysis_result.get('attackFlow', {})
+            if attack_flow and attack_flow.get('nodes'):
+                story.append(Paragraph("Attack Flow Analysis", heading_style))
+
+                nodes = attack_flow.get('nodes', [])
+
+                # C2 Servers
+                c2_nodes = [n for n in nodes if n.get('type') == 'ip']
+                if c2_nodes:
+                    story.append(Paragraph("<font color='red'><b>C2 Server Connections (defanged):</b></font>", subheading_style))
+                    for node in c2_nodes:
+                        data = node.get('data', {})
+                        ip = data.get('ip', '')
+                        port = data.get('port', '')
+                        c2_addr = f"{ip}:{port}" if port else ip
+                        story.append(Paragraph(f"  • <font color='red'><b>{defang_ip(c2_addr)}</b></font>", body_style))
+                    story.append(Spacer(1, 5))
+
+                # DLL Loads with full paths
+                dll_nodes = [n for n in nodes if n.get('type') == 'dll']
+                if dll_nodes:
+                    story.append(Paragraph("<b>DLL Loads:</b>", subheading_style))
+                    for node in dll_nodes:
+                        data = node.get('data', {})
+                        dll_name = data.get('dll', node.get('label', 'Unknown'))
+                        dll_path = data.get('path', '')
+                        if dll_path:
+                            story.append(Paragraph(f"  • <b>{dll_name}</b>", body_style))
+                            story.append(Paragraph(f"    <font color='#006600'><i>{dll_path}</i></font>", body_style))
+                        else:
+                            story.append(Paragraph(f"  • {dll_name}", body_style))
+                    story.append(Spacer(1, 5))
+
+                # API Calls with source DLLs
+                api_nodes = [n for n in nodes if n.get('type') == 'api']
+                if api_nodes:
+                    story.append(Paragraph("<b>Suspicious API Calls:</b>", subheading_style))
+                    for node in api_nodes:
+                        data = node.get('data', {})
+                        api_name = data.get('api', node.get('label', 'Unknown'))
+                        source_dll = data.get('dll', '')
+                        severity = node.get('severity', 'info')
+                        sev_color = 'red' if severity in ['critical', 'high'] else 'orange' if severity == 'medium' else 'black'
+                        if source_dll:
+                            story.append(Paragraph(f"  • <font color='{sev_color}'><b>{api_name}</b></font> from <b>{source_dll}</b>", body_style))
+                        else:
+                            story.append(Paragraph(f"  • <font color='{sev_color}'><b>{api_name}</b></font>", body_style))
+                    story.append(Spacer(1, 5))
+
+                # Domain connections
+                domain_nodes = [n for n in nodes if n.get('type') == 'domain']
+                if domain_nodes:
+                    story.append(Paragraph("<b>Domain Connections (defanged):</b>", subheading_style))
+                    for node in domain_nodes:
+                        data = node.get('data', {})
+                        domain = data.get('domain', node.get('label', 'Unknown'))
+                        story.append(Paragraph(f"  • {defang_domain(domain)}", body_style))
+                    story.append(Spacer(1, 5))
+
+                story.append(Spacer(1, 10))
+
+            # Runtime DLL Loads (from execution)
+            execution = analysis_result.get('execution', {})
+            dll_loads = execution.get('dllLoads', [])
+            if dll_loads:
+                story.append(Paragraph("Runtime DLL Loads", heading_style))
+                # Filter to show interesting DLLs
+                network_dlls = ['ws2_32', 'winhttp', 'wininet', 'dnsapi', 'iphlpapi', 'mswsock']
+                security_dlls = ['advapi32', 'crypt32', 'bcrypt', 'ncrypt']
+
+                interesting = []
+                other = []
+                for dll in dll_loads:
+                    dll_lower = dll.lower()
+                    if any(net in dll_lower for net in network_dlls):
+                        interesting.append(('Network', dll))
+                    elif any(sec in dll_lower for sec in security_dlls):
+                        interesting.append(('Security', dll))
+                    elif 'payload' in dll_lower or 'sandbox' in dll_lower:
+                        interesting.append(('Payload', dll))
+                    else:
+                        other.append(dll)
+
+                if interesting:
+                    story.append(Paragraph("<b>Interesting DLLs:</b>", subheading_style))
+                    for cat, dll in interesting[:15]:
+                        color = 'red' if cat == 'Payload' else 'orange' if cat == 'Network' else 'black'
+                        story.append(Paragraph(f"  • <font color='{color}'>[{cat}]</font> {dll}", body_style))
+
+                if other and len(other) <= 10:
+                    story.append(Paragraph("<b>Other DLLs:</b>", subheading_style))
+                    for dll in other:
+                        story.append(Paragraph(f"  • {dll}", body_style))
+                elif other:
+                    story.append(Paragraph(f"<i>Plus {len(other)} other system DLLs loaded</i>", body_style))
+
+                story.append(Spacer(1, 10))
+
             # Extracted IOCs
             iocs = analysis_result.get('iocs', {})
             if iocs:
