@@ -9,6 +9,7 @@ import ReactFlow, {
   useEdgesState,
   MarkerType,
   Position,
+  Handle,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 
@@ -114,7 +115,7 @@ function FlowNodeComponent({ data }: { data: any }) {
 
   // Radial layout - center node (file) is larger, others are circular badges
   if (data.isCenter) {
-    // Center node - large prominent display
+    // Center node - large prominent display with handles on all sides
     return (
       <div
         className="attack-flow-node"
@@ -130,8 +131,14 @@ function FlowNodeComponent({ data }: { data: any }) {
           justifyContent: 'center',
           boxShadow: `0 0 30px ${colors.glow}, 0 0 60px ${colors.glow}55`,
           animation: 'pulse 2s ease-in-out infinite',
+          position: 'relative',
         }}
       >
+        {/* Handles for edges - invisible but functional */}
+        <Handle type="source" position={Position.Top} style={{ opacity: 0 }} />
+        <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+        <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+        <Handle type="source" position={Position.Left} style={{ opacity: 0 }} />
         <span style={{ fontSize: '28px', marginBottom: '4px' }}>{icon}</span>
         <span style={{
           color: colors.text,
@@ -166,8 +173,15 @@ function FlowNodeComponent({ data }: { data: any }) {
           maxWidth: '280px',
           boxShadow: `0 4px 15px ${colors.glow}`,
           animation: isCritical ? 'pulse 2s ease-in-out infinite' : undefined,
+          position: 'relative',
         }}
       >
+        {/* Handles for edges - invisible but functional */}
+        <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+        <Handle type="target" position={Position.Right} style={{ opacity: 0 }} />
+        <Handle type="target" position={Position.Bottom} style={{ opacity: 0 }} />
+        <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+
         {/* Header with icon and type */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
           <span style={{ fontSize: '20px' }}>{icon}</span>
@@ -239,6 +253,10 @@ function FlowNodeComponent({ data }: { data: any }) {
         animation: isCritical ? 'pulse 2s ease-in-out infinite' : undefined,
       }}
     >
+      {/* Handles for edges */}
+      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+
       {/* Step number badge */}
       {data.step && (
         <div style={{
