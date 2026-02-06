@@ -1242,7 +1242,7 @@ class BubblewrapBackend:
                 'prlimit',
                 f'--as={MEMORY_LIMIT_MB * 1024 * 1024}',  # Virtual memory limit
                 f'--fsize={DISK_LIMIT_MB * 1024 * 1024}',  # Max file size
-                f'--nproc=50',  # Max processes
+                # Note: --nproc removed - it blocks namespace creation
                 f'--nofile=256',  # Max open files
                 '--core=0',  # No core dumps
             ]
@@ -1310,7 +1310,7 @@ class BubblewrapBackend:
                 'prlimit',
                 f'--as={MEMORY_LIMIT_MB * 1024 * 1024}',  # Virtual memory limit
                 f'--fsize={DISK_LIMIT_MB * 1024 * 1024}',  # Max file size
-                f'--nproc=50',  # Max processes
+                # Note: --nproc removed - it blocks namespace creation
                 f'--nofile=256',  # Max open files
                 '--core=0',  # No core dumps
             ]
