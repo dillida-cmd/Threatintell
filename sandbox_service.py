@@ -73,6 +73,70 @@ HASH_SHA1_PATTERN = re.compile(r'\b[a-fA-F0-9]{40}\b')
 HASH_SHA256_PATTERN = re.compile(r'\b[a-fA-F0-9]{64}\b')
 EMAIL_PATTERN = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
 
+# Valid TLDs for domain filtering (common ones)
+VALID_TLDS = {
+    'com', 'net', 'org', 'edu', 'gov', 'mil', 'int', 'io', 'co', 'us', 'uk', 'de', 'fr', 'es',
+    'it', 'nl', 'be', 'ch', 'at', 'au', 'ca', 'br', 'mx', 'jp', 'cn', 'kr', 'in', 'ru', 'pl',
+    'se', 'no', 'dk', 'fi', 'ie', 'nz', 'za', 'sg', 'hk', 'tw', 'my', 'th', 'vn', 'id', 'ph',
+    'eu', 'asia', 'info', 'biz', 'name', 'pro', 'xyz', 'online', 'site', 'tech', 'app', 'dev',
+    'cloud', 'store', 'shop', 'blog', 'news', 'live', 'today', 'media', 'group', 'world',
+    'space', 'top', 'link', 'click', 'club', 'work', 'life', 'email', 'one', 'ai', 'me', 'tv'
+}
+
+# File extensions that look like TLDs but aren't domains
+FALSE_POSITIVE_EXTENSIONS = {
+    'css', 'js', 'php', 'html', 'htm', 'asp', 'aspx', 'jsp', 'py', 'rb', 'pl', 'sh',
+    'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp', 'bmp', 'tiff',
+    'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'xml', 'json',
+    'zip', 'rar', 'tar', 'gz', 'exe', 'dll', 'msi', 'bin', 'iso',
+    'mp3', 'mp4', 'avi', 'mov', 'wmv', 'flv', 'wav', 'ogg', 'woff', 'woff2', 'ttf', 'eot',
+    'min', 'map', 'scss', 'sass', 'less'
+}
+
+# Known safe/benign domains to exclude from IOCs
+SAFE_DOMAINS = {
+    # CDNs and hosting
+    'googleapis.com', 'fonts.googleapis.com', 'ajax.googleapis.com', 'maps.googleapis.com',
+    'googletagmanager.com', 'www.googletagmanager.com', 'google-analytics.com',
+    'cloudflare.com', 'cdnjs.cloudflare.com', 'cdn.cloudflare.com',
+    'jsdelivr.net', 'cdn.jsdelivr.net', 'unpkg.com', 'cdnjs.com',
+    'bootstrapcdn.com', 'maxcdn.bootstrapcdn.com',
+    'fontawesome.com', 'kit.fontawesome.com', 'use.fontawesome.com',
+    'jquery.com', 'code.jquery.com',
+    # Standards and specs
+    'w3.org', 'www.w3.org', 'schema.org', 'ogp.me', 'gmpg.org',
+    # WordPress
+    'wordpress.org', 'api.wordpress.org', 'api.w.org', 's.w.org',
+    'wp.org', 'api.wp.org', 'gravatar.com', 's.gravatar.com',
+    # Social/Common
+    'facebook.com', 'twitter.com', 'linkedin.com', 'instagram.com', 'youtube.com',
+    'github.com', 'githubusercontent.com', 'raw.githubusercontent.com',
+    # Analytics
+    'google.com', 'www.google.com', 'gstatic.com', 'www.gstatic.com',
+}
+
+# Patterns that indicate CSS classes or JS code, not domains
+CSS_JS_PATTERNS = [
+    r'^wp-block-',  # WordPress blocks
+    r'^style\.',    # CSS
+    r'^script\.',
+    r'^window\.',   # JS globals
+    r'^document\.',
+    r'^datalayer\.',
+    r'^image\.',
+    r'^img\.',
+    r'^body\.',
+    r'^h[1-6]\.',   # h1.has, h2.has etc
+    r'\.align',     # .alignleft, .alignright
+    r'\.has[A-Z]',  # .hasImage
+    r'\.wp[a-z]',   # .wpg
+    r'\.is[A-Z]',   # .isDefault
+    r'-\d+x\d+\.',  # image dimensions like -150x150.png
+    r'^cropped-',   # WordPress cropped images
+    r'\.min$',      # minified files
+    r'^[a-z]+callbacks\.',  # JS callbacks
+]
+
 # Session tracking
 _active_sessions = {}
 _session_lock = threading.Lock()
@@ -297,11 +361,44 @@ class IOCCollector:
         for match in URL_PATTERN.findall(text):
             self.urls.add(match)
 
-        # Extract domains
+        # Extract domains with improved filtering
         for match in DOMAIN_PATTERN.findall(text):
-            # Filter out common false positives
-            if len(match) > 4 and '.' in match:
-                self.domains.add(match.lower())
+            domain = match.lower()
+
+            # Skip if too short
+            if len(domain) < 4 or '.' not in domain:
+                continue
+
+            # Get the TLD (last part after dot)
+            parts = domain.split('.')
+            tld = parts[-1]
+
+            # Skip if TLD is actually a file extension
+            if tld in FALSE_POSITIVE_EXTENSIONS:
+                continue
+
+            # Skip if TLD is not a valid domain TLD
+            if tld not in VALID_TLDS:
+                continue
+
+            # Skip known safe domains
+            if domain in SAFE_DOMAINS or any(domain.endswith('.' + safe) for safe in SAFE_DOMAINS):
+                continue
+
+            # Skip if matches CSS/JS patterns
+            is_css_js = False
+            for pattern in CSS_JS_PATTERNS:
+                if re.search(pattern, domain, re.IGNORECASE):
+                    is_css_js = True
+                    break
+            if is_css_js:
+                continue
+
+            # Skip if it looks like a file path (has multiple segments with file-like names)
+            if any(part.endswith(('.css', '.js', '.png', '.jpg', '.php', '.html')) for part in parts[:-1]):
+                continue
+
+            self.domains.add(domain)
 
         # Extract emails
         for match in EMAIL_PATTERN.findall(text):
@@ -585,6 +682,349 @@ class ThreatMap:
 
 
 # =============================================================================
+# MITRE ATT&CK Technique Mappings
+# =============================================================================
+
+MITRE_TECHNIQUES = {
+    # Execution
+    'CreateProcess': {'id': 'T1106', 'name': 'Native API', 'tactic': 'Execution'},
+    'ShellExecute': {'id': 'T1059', 'name': 'Command and Scripting Interpreter', 'tactic': 'Execution'},
+    'WinExec': {'id': 'T1106', 'name': 'Native API', 'tactic': 'Execution'},
+    'LoadLibrary': {'id': 'T1129', 'name': 'Shared Modules', 'tactic': 'Execution'},
+    'GetProcAddress': {'id': 'T1106', 'name': 'Native API', 'tactic': 'Execution'},
+
+    # Defense Evasion / Process Injection
+    'VirtualAlloc': {'id': 'T1055', 'name': 'Process Injection', 'tactic': 'Defense Evasion'},
+    'VirtualProtect': {'id': 'T1055', 'name': 'Process Injection', 'tactic': 'Defense Evasion'},
+    'WriteProcessMemory': {'id': 'T1055.001', 'name': 'DLL Injection', 'tactic': 'Defense Evasion'},
+    'CreateRemoteThread': {'id': 'T1055.001', 'name': 'DLL Injection', 'tactic': 'Privilege Escalation'},
+    'NtUnmapViewOfSection': {'id': 'T1055.012', 'name': 'Process Hollowing', 'tactic': 'Defense Evasion'},
+
+    # Command and Control
+    'WSAStartup': {'id': 'T1071', 'name': 'Application Layer Protocol', 'tactic': 'Command and Control'},
+    'socket': {'id': 'T1095', 'name': 'Non-Application Layer Protocol', 'tactic': 'Command and Control'},
+    'connect': {'id': 'T1095', 'name': 'Non-Application Layer Protocol', 'tactic': 'Command and Control'},
+    'send': {'id': 'T1095', 'name': 'Non-Application Layer Protocol', 'tactic': 'Command and Control'},
+    'recv': {'id': 'T1095', 'name': 'Non-Application Layer Protocol', 'tactic': 'Command and Control'},
+    'InternetOpen': {'id': 'T1071.001', 'name': 'Web Protocols', 'tactic': 'Command and Control'},
+    'InternetConnect': {'id': 'T1071.001', 'name': 'Web Protocols', 'tactic': 'Command and Control'},
+    'HttpOpenRequest': {'id': 'T1071.001', 'name': 'Web Protocols', 'tactic': 'Command and Control'},
+    'gethostbyname': {'id': 'T1071', 'name': 'Application Layer Protocol', 'tactic': 'Command and Control'},
+    'getaddrinfo': {'id': 'T1071', 'name': 'Application Layer Protocol', 'tactic': 'Command and Control'},
+
+    # Persistence
+    'RegSetValue': {'id': 'T1547.001', 'name': 'Registry Run Keys', 'tactic': 'Persistence'},
+    'RegCreateKey': {'id': 'T1547.001', 'name': 'Registry Run Keys', 'tactic': 'Persistence'},
+    'CreateService': {'id': 'T1543.003', 'name': 'Windows Service', 'tactic': 'Persistence'},
+
+    # Discovery
+    'GetTickCount': {'id': 'T1497', 'name': 'Virtualization/Sandbox Evasion', 'tactic': 'Defense Evasion'},
+    'GetSystemTime': {'id': 'T1124', 'name': 'System Time Discovery', 'tactic': 'Discovery'},
+    'GetComputerName': {'id': 'T1082', 'name': 'System Information Discovery', 'tactic': 'Discovery'},
+    'GetUserName': {'id': 'T1033', 'name': 'System Owner/User Discovery', 'tactic': 'Discovery'},
+    'GetVersion': {'id': 'T1082', 'name': 'System Information Discovery', 'tactic': 'Discovery'},
+
+    # File Operations
+    'CreateFile': {'id': 'T1083', 'name': 'File and Directory Discovery', 'tactic': 'Discovery'},
+    'ReadFile': {'id': 'T1005', 'name': 'Data from Local System', 'tactic': 'Collection'},
+    'WriteFile': {'id': 'T1565.001', 'name': 'Stored Data Manipulation', 'tactic': 'Impact'},
+    'DeleteFile': {'id': 'T1070.004', 'name': 'File Deletion', 'tactic': 'Defense Evasion'},
+
+    # Crypto
+    'CryptAcquireContext': {'id': 'T1027', 'name': 'Obfuscated Files or Information', 'tactic': 'Defense Evasion'},
+    'CryptEncrypt': {'id': 'T1486', 'name': 'Data Encrypted for Impact', 'tactic': 'Impact'},
+    'CryptDecrypt': {'id': 'T1140', 'name': 'Deobfuscate/Decode Files', 'tactic': 'Defense Evasion'},
+}
+
+# Suspicious API patterns that indicate malicious behavior
+SUSPICIOUS_API_PATTERNS = {
+    'process_injection': ['VirtualAlloc', 'VirtualProtect', 'WriteProcessMemory', 'CreateRemoteThread', 'NtUnmapViewOfSection'],
+    'code_execution': ['CreateProcess', 'ShellExecute', 'WinExec', 'system'],
+    'network_communication': ['WSAStartup', 'socket', 'connect', 'send', 'recv', 'InternetOpen', 'InternetConnect'],
+    'persistence': ['RegSetValue', 'RegCreateKey', 'CreateService', 'SetFileAttributes'],
+    'anti_analysis': ['GetTickCount', 'QueryPerformanceCounter', 'IsDebuggerPresent', 'CheckRemoteDebuggerPresent'],
+    'credential_access': ['CredRead', 'LsaRetrievePrivateData', 'CryptUnprotectData'],
+    'discovery': ['GetComputerName', 'GetUserName', 'GetSystemInfo', 'GetVersion', 'EnumProcesses'],
+}
+
+
+# =============================================================================
+# Enhanced Wine Debug Output Parser with API Tracing
+# =============================================================================
+
+def parse_wine_debug_output(output: str) -> Dict:
+    """Parse Wine debug output to extract behavioral data
+
+    Wine trace format examples:
+    - trace:reg:NtOpenKeyEx ((nil),L"\\Registry\\Machine\\...")
+    - trace:file:nt_to_unix_file_name L"\\??\\C:\\Windows\\..."
+    - trace:loaddll:Loaded L"C:\\Windows\\System32\\ntdll.dll"
+    - trace:relay:Call KERNEL32.VirtualAlloc(...)
+    """
+    result = {
+        'filesystem': {
+            'filesOpened': [],
+            'filesCreated': [],
+        },
+        'registry': {
+            'keysOpened': [],
+            'keysModified': [],
+        },
+        'dlls': [],
+        'apiCalls': [],
+        'mitreTechniques': [],
+        'networkActivity': {
+            'dnsQueries': [],
+            'connections': [],
+        },
+    }
+
+    if not output:
+        return result
+
+    seen_files = set()
+    seen_registry = set()
+    seen_dlls = set()
+    seen_apis = set()
+    seen_techniques = set()
+
+    for line in output.split('\n'):
+        # Parse DLL loads: trace:loaddll:Loaded L"..." or Module loaded
+        if 'loaddll:' in line or 'Loaded' in line:
+            dll_match = re.search(r'L"([^"]+\.(dll|exe))"', line, re.IGNORECASE)
+            if dll_match:
+                dll_path = dll_match.group(1)
+                if dll_path not in seen_dlls:
+                    seen_dlls.add(dll_path)
+                    result['dlls'].append(dll_path)
+
+        # Parse file operations: trace:file:nt_to_unix_file_name L"..."
+        if 'trace:file:' in line:
+            # Match Windows paths in L"..." format
+            file_match = re.search(r'L"([^"]+)"', line)
+            if file_match:
+                file_path = file_match.group(1)
+                # Convert Wine path format and filter
+                if '\\' in file_path and file_path not in seen_files:
+                    # Skip system noise paths
+                    if not any(skip in file_path.lower() for skip in ['dosdevices', '??\\', 'sandbox']):
+                        seen_files.add(file_path)
+                        # Clean up path
+                        clean_path = file_path.replace('\\??\\', '').replace('\\\\', '\\')
+                        if clean_path.lower().endswith('.dll'):
+                            if clean_path not in seen_dlls:
+                                seen_dlls.add(clean_path)
+                                result['dlls'].append(clean_path)
+                        else:
+                            result['filesystem']['filesOpened'].append(clean_path)
+
+        # Parse registry operations: trace:reg:NtOpenKeyEx/NtCreateKey L"\\Registry\\..."
+        if 'trace:reg:' in line:
+            reg_match = re.search(r'L"\\\\Registry\\\\([^"]+)"', line)
+            if reg_match:
+                reg_path = reg_match.group(1)
+                # Convert to HKEY format
+                if reg_path.startswith('Machine\\'):
+                    reg_key = 'HKEY_LOCAL_MACHINE\\' + reg_path[8:]
+                elif reg_path.startswith('User\\'):
+                    # Extract user key path after SID
+                    parts = reg_path.split('\\', 2)
+                    if len(parts) > 2:
+                        reg_key = 'HKEY_CURRENT_USER\\' + parts[2]
+                    else:
+                        reg_key = 'HKEY_USERS\\' + reg_path[5:]
+                else:
+                    reg_key = 'HKEY_' + reg_path
+
+                if reg_key not in seen_registry:
+                    seen_registry.add(reg_key)
+                    if 'NtSetValue' in line or 'NtCreateKey' in line:
+                        result['registry']['keysModified'].append(reg_key)
+                    else:
+                        result['registry']['keysOpened'].append(reg_key)
+
+        # Parse API calls from relay output: trace:relay:Call MODULE.APIName(...)
+        if 'relay:' in line and 'Call' in line:
+            # Match API call pattern: Call MODULE.APIName
+            api_match = re.search(r'Call\s+(\w+)\.(\w+)', line)
+            if api_match:
+                module = api_match.group(1)
+                api_name = api_match.group(2)
+                api_key = f"{module}.{api_name}"
+
+                # Only track interesting APIs (not too noisy)
+                if api_name in MITRE_TECHNIQUES and api_key not in seen_apis:
+                    seen_apis.add(api_key)
+
+                    # Get MITRE mapping
+                    technique = MITRE_TECHNIQUES.get(api_name)
+                    if technique:
+                        result['apiCalls'].append({
+                            'module': module,
+                            'api': api_name,
+                            'technique': technique['id'],
+                            'techniqueName': technique['name'],
+                            'tactic': technique['tactic'],
+                        })
+
+                        # Track unique techniques
+                        tech_key = technique['id']
+                        if tech_key not in seen_techniques:
+                            seen_techniques.add(tech_key)
+                            result['mitreTechniques'].append({
+                                'id': technique['id'],
+                                'name': technique['name'],
+                                'tactic': technique['tactic'],
+                            })
+
+        # Parse DNS queries from gethostbyname/getaddrinfo calls
+        if 'gethostbyname' in line or 'getaddrinfo' in line:
+            # Try to extract hostname from arguments
+            host_match = re.search(r'"([a-zA-Z0-9](?:[a-zA-Z0-9\-\.]+[a-zA-Z0-9])?)"', line)
+            if host_match:
+                hostname = host_match.group(1)
+                if hostname and '.' in hostname and hostname not in result['networkActivity']['dnsQueries']:
+                    result['networkActivity']['dnsQueries'].append(hostname)
+
+        # Parse socket connect calls for IP addresses
+        if 'connect(' in line or 'WSAConnect' in line:
+            # Try to extract IP:port from arguments
+            ip_match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[:\s]+(\d+)', line)
+            if ip_match:
+                ip = ip_match.group(1)
+                port = ip_match.group(2)
+                conn = {'ip': ip, 'port': int(port)}
+                if conn not in result['networkActivity']['connections']:
+                    result['networkActivity']['connections'].append(conn)
+
+    return result
+
+
+def parse_tcpdump_output(pcap_file: str) -> Dict:
+    """Parse tcpdump pcap file to extract network activity"""
+    result = {
+        'dnsQueries': [],
+        'httpRequests': [],
+        'connections': [],
+        'protocols': set(),
+    }
+
+    if not os.path.exists(pcap_file):
+        return result
+
+    # Use tcpdump to read pcap in text format
+    tcpdump_path = shutil.which('tcpdump')
+    if not tcpdump_path:
+        return result
+
+    try:
+        # Extract DNS queries
+        proc = subprocess.run(
+            [tcpdump_path, '-r', pcap_file, '-n', 'udp port 53', '-v'],
+            capture_output=True, timeout=30
+        )
+        dns_output = proc.stdout.decode('utf-8', errors='replace')
+        for line in dns_output.split('\n'):
+            # Match DNS query patterns
+            if ' A? ' in line or ' AAAA? ' in line:
+                query_match = re.search(r'\s(A\??|AAAA\??)\s+([a-zA-Z0-9\.\-]+)', line)
+                if query_match:
+                    domain = query_match.group(2).rstrip('.')
+                    if domain and domain not in result['dnsQueries']:
+                        result['dnsQueries'].append(domain)
+
+        # Extract TCP connections
+        proc = subprocess.run(
+            [tcpdump_path, '-r', pcap_file, '-n', 'tcp', '-q'],
+            capture_output=True, timeout=30
+        )
+        tcp_output = proc.stdout.decode('utf-8', errors='replace')
+        seen_conns = set()
+        for line in tcp_output.split('\n'):
+            # Match connection patterns: IP > IP.port:
+            conn_match = re.search(r'(\d+\.\d+\.\d+\.\d+)\.(\d+)\s+>\s+(\d+\.\d+\.\d+\.\d+)\.(\d+)', line)
+            if conn_match:
+                src_ip, src_port, dst_ip, dst_port = conn_match.groups()
+                # Filter out local/internal connections
+                if not dst_ip.startswith(('127.', '10.', '192.168.', '172.')):
+                    conn_key = f"{dst_ip}:{dst_port}"
+                    if conn_key not in seen_conns:
+                        seen_conns.add(conn_key)
+                        result['connections'].append({
+                            'ip': dst_ip,
+                            'port': int(dst_port),
+                            'protocol': 'tcp'
+                        })
+
+        # Detect HTTP traffic
+        proc = subprocess.run(
+            [tcpdump_path, '-r', pcap_file, '-A', 'tcp port 80 or tcp port 443'],
+            capture_output=True, timeout=30
+        )
+        http_output = proc.stdout.decode('utf-8', errors='replace')
+        for line in http_output.split('\n'):
+            # Match HTTP request patterns
+            if line.startswith(('GET ', 'POST ', 'PUT ', 'HEAD ')):
+                parts = line.split(' ')
+                if len(parts) >= 2:
+                    method = parts[0]
+                    path = parts[1]
+                    result['httpRequests'].append({
+                        'method': method,
+                        'path': path
+                    })
+            # Match Host headers
+            if line.lower().startswith('host:'):
+                host = line.split(':', 1)[1].strip()
+                if host and host not in result['dnsQueries']:
+                    result['dnsQueries'].append(host)
+
+        result['protocols'] = list(result['protocols'])
+
+    except Exception as e:
+        pass
+
+    return result
+
+
+def start_network_capture(output_file: str, interface: str = 'any', timeout: int = 30) -> Optional[subprocess.Popen]:
+    """Start tcpdump to capture network traffic during sandbox execution"""
+    tcpdump_path = shutil.which('tcpdump')
+    if not tcpdump_path:
+        return None
+
+    try:
+        # Start tcpdump in background
+        proc = subprocess.Popen(
+            [
+                tcpdump_path,
+                '-i', interface,
+                '-w', output_file,
+                '-c', '1000',  # Max 1000 packets
+                'not port 22',  # Exclude SSH
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return proc
+    except Exception:
+        return None
+
+
+def stop_network_capture(proc: Optional[subprocess.Popen]) -> None:
+    """Stop tcpdump capture process"""
+    if proc:
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+# =============================================================================
 # Bubblewrap Backend
 # =============================================================================
 
@@ -649,26 +1089,52 @@ class BubblewrapBackend:
         args = ['bwrap']
 
         # Filesystem isolation - bind necessary directories if they exist
+        # Modern Linux distros use symlinks: /bin -> usr/bin, /lib -> usr/lib
+        # Bind /usr first, then create symlinks for compatibility
         bind_dirs = [
             ('/usr', '/usr'),
-            ('/lib', '/lib'),
-            ('/bin', '/bin'),
-            ('/sbin', '/sbin'),
         ]
+
+        # Symlinks for modern filesystem layout (Kali, Ubuntu 22.04+, etc.)
+        symlink_dirs = []
+        if os.path.islink('/bin'):
+            symlink_dirs.append(('usr/bin', '/bin'))
+        if os.path.islink('/sbin'):
+            symlink_dirs.append(('usr/sbin', '/sbin'))
+        if os.path.islink('/lib'):
+            symlink_dirs.append(('usr/lib', '/lib'))
+        if os.path.islink('/lib64'):
+            symlink_dirs.append(('usr/lib64', '/lib64'))
+
+        # Fallback: bind directly if not symlinks (older systems)
+        if not os.path.islink('/bin'):
+            bind_dirs.append(('/bin', '/bin'))
+        if not os.path.islink('/sbin'):
+            bind_dirs.append(('/sbin', '/sbin'))
+        if not os.path.islink('/lib'):
+            bind_dirs.append(('/lib', '/lib'))
 
         # Add optional directories that may exist
         optional_dirs = [
-            '/lib64',
-            '/lib32',
             '/etc/alternatives',
             '/etc/ld.so.cache',
             '/etc/ld.so.conf',
             '/etc/ld.so.conf.d',
         ]
 
+        # Only add lib64/lib32 if they're real directories, not symlinks
+        if os.path.exists('/lib64') and not os.path.islink('/lib64'):
+            optional_dirs.append('/lib64')
+        if os.path.exists('/lib32') and not os.path.islink('/lib32'):
+            optional_dirs.append('/lib32')
+
         for src, dest in bind_dirs:
             if os.path.exists(src):
                 args.extend(['--ro-bind', src, dest])
+
+        # Add symlinks for modern filesystem layout (Kali, Ubuntu 22.04+)
+        for target, link_path in symlink_dirs:
+            args.extend(['--symlink', target, link_path])
 
         for dir_path in optional_dirs:
             if os.path.exists(dir_path):
@@ -689,7 +1155,7 @@ class BubblewrapBackend:
 
         # Isolation options
         args.extend([
-            '--unshare-all',
+            '--unshare-user', '--unshare-pid', '--unshare-net', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup',
             '--die-with-parent',
             '--new-session',
             '--cap-drop', 'ALL',
@@ -709,9 +1175,11 @@ class BubblewrapBackend:
         ])
 
         # Seccomp - block dangerous syscalls (if seccomp file exists)
-        seccomp_filter = os.path.join(os.path.dirname(__file__), 'sandbox_seccomp.json')
-        if os.path.exists(seccomp_filter):
-            args.extend(['--seccomp', '3', '3<' + seccomp_filter])
+        # Seccomp disabled - bwrap seccomp requires file descriptor, not path
+        # TODO: Implement proper seccomp with subprocess fd passing
+        # seccomp_filter = os.path.join(os.path.dirname(__file__), 'sandbox_seccomp.json')
+        # if os.path.exists(seccomp_filter):
+        #     args.extend(['--seccomp', '3', '3<' + seccomp_filter])
 
         if not allow_network:
             args.extend(['--unshare-net'])
@@ -921,22 +1389,37 @@ class BubblewrapBackend:
         # Build bwrap args - order matters!
         args = [
             'bwrap',
-            '--unshare-all',
+            '--unshare-user', '--unshare-pid', '--unshare-net', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup',
             '--die-with-parent',
             '--new-session',
         ]
 
         # Filesystem isolation - bind necessary directories
+        # Modern Linux distros use symlinks: /bin -> usr/bin, /lib -> usr/lib
         bind_dirs = [
             ('/usr', '/usr'),
-            ('/lib', '/lib'),
-            ('/bin', '/bin'),
-            ('/sbin', '/sbin'),
         ]
 
+        # Symlinks for modern filesystem layout (Kali, Ubuntu 22.04+, etc.)
+        symlink_dirs = []
+        if os.path.islink('/bin'):
+            symlink_dirs.append(('usr/bin', '/bin'))
+        if os.path.islink('/sbin'):
+            symlink_dirs.append(('usr/sbin', '/sbin'))
+        if os.path.islink('/lib'):
+            symlink_dirs.append(('usr/lib', '/lib'))
+        if os.path.islink('/lib64'):
+            symlink_dirs.append(('usr/lib64', '/lib64'))
+
+        # Fallback: bind directly if not symlinks (older systems)
+        if not os.path.islink('/bin'):
+            bind_dirs.append(('/bin', '/bin'))
+        if not os.path.islink('/sbin'):
+            bind_dirs.append(('/sbin', '/sbin'))
+        if not os.path.islink('/lib'):
+            bind_dirs.append(('/lib', '/lib'))
+
         optional_dirs = [
-            '/lib64',
-            '/lib32',
             '/etc/alternatives',
             '/etc/ld.so.cache',
             '/etc/ld.so.conf',
@@ -944,9 +1427,19 @@ class BubblewrapBackend:
             '/etc/fonts',  # For Wine fontconfig
         ]
 
+        # Only add lib64/lib32 if they're real directories, not symlinks
+        if os.path.exists('/lib64') and not os.path.islink('/lib64'):
+            optional_dirs.append('/lib64')
+        if os.path.exists('/lib32') and not os.path.islink('/lib32'):
+            optional_dirs.append('/lib32')
+
         for src, dest in bind_dirs:
             if os.path.exists(src):
                 args.extend(['--ro-bind', src, dest])
+
+        # Add symlinks for modern filesystem layout
+        for target, link_path in symlink_dirs:
+            args.extend(['--symlink', target, link_path])
 
         for dir_path in optional_dirs:
             if os.path.exists(dir_path):
@@ -979,12 +1472,17 @@ class BubblewrapBackend:
         ])
 
         # Environment and final options
+        # Enable Wine debug channels to capture behavioral data
+        # +loaddll: DLL loading, +file: file access, +reg: registry access
+        # +relay: API call tracing (for detailed API monitoring)
+        # +seh: exception handling, +module: module events
+        wine_debug = '+loaddll,+file,+reg,+relay,+module,+seh,-other'
         args.extend([
             '--cap-drop', 'ALL',
             '--hostname', 'sandbox',
             '--chdir', '/sandbox',
             '--setenv', 'WINEPREFIX', '/sandbox/.wine',
-            '--setenv', 'WINEDEBUG', '-all',
+            '--setenv', 'WINEDEBUG', wine_debug,
             '--setenv', 'DISPLAY', '',
             '--setenv', 'PATH', '/usr/bin:/bin:/usr/lib/wine',
         ])
@@ -1001,6 +1499,10 @@ class BubblewrapBackend:
         args.extend(command)
 
         start_time = datetime.now()
+
+        # Start network capture if tcpdump is available
+        pcap_file = os.path.join(self.output_dir, 'capture.pcap')
+        network_capture_proc = start_network_capture(pcap_file, timeout=self.timeout)
 
         # Start screenshot capture in background thread if enabled
         screenshot_results = []
@@ -1042,6 +1544,9 @@ class BubblewrapBackend:
 
         result['execution_time'] = (datetime.now() - start_time).total_seconds()
 
+        # Stop network capture
+        stop_network_capture(network_capture_proc)
+
         # Wait for screenshot thread to complete (with timeout)
         if screenshot_thread and screenshot_thread.is_alive():
             screenshot_thread.join(timeout=5)
@@ -1057,6 +1562,29 @@ class BubblewrapBackend:
                     result['strace_output'] = f.read()[:100000]
             except Exception:
                 pass
+
+        # Parse Wine debug output for behavioral data (including API calls)
+        wine_output = result.get('stderr', '') + result.get('stdout', '')
+        behavioral_data = parse_wine_debug_output(wine_output)
+        result['filesystemChanges'] = behavioral_data.get('filesystem', {})
+        result['registryChanges'] = behavioral_data.get('registry', {})
+        result['dllLoads'] = behavioral_data.get('dlls', [])
+        result['apiCalls'] = behavioral_data.get('apiCalls', [])
+        result['mitreTechniques'] = behavioral_data.get('mitreTechniques', [])
+
+        # Parse network capture from tcpdump
+        network_from_wine = behavioral_data.get('networkActivity', {})
+        network_from_pcap = parse_tcpdump_output(pcap_file)
+
+        # Merge network activity from Wine debug and tcpdump
+        result['networkActivity'] = {
+            'dnsQueries': list(set(
+                network_from_wine.get('dnsQueries', []) +
+                network_from_pcap.get('dnsQueries', [])
+            )),
+            'connections': network_from_wine.get('connections', []) + network_from_pcap.get('connections', []),
+            'httpRequests': network_from_pcap.get('httpRequests', []),
+        }
 
         return result
 
@@ -1162,6 +1690,9 @@ class DockerBackend:
         shutil.copy2(exe_path, sandbox_exe)
 
         # Docker command with Wine image
+        # Enable Wine debug channels to capture behavioral data
+        # +loaddll: DLL loading, +file: file access, +reg: registry, +relay: API calls
+        wine_debug = '+loaddll,+file,+reg,+relay,+module,+seh,-other'
         docker_args = [
             'docker', 'run',
             '--rm',
@@ -1169,7 +1700,7 @@ class DockerBackend:
             '--network', 'none',
             '--memory', f'{MEMORY_LIMIT_MB}m',
             '--cpus', '0.5',
-            '-e', 'WINEDEBUG=-all',
+            '-e', f'WINEDEBUG={wine_debug}',
             '-e', 'DISPLAY=',
             '-v', f'{self.work_dir}:/sandbox:ro',
             '-v', f'{self.output_dir}:/output',
@@ -1200,6 +1731,17 @@ class DockerBackend:
             result['error'] = str(e)
 
         result['execution_time'] = (datetime.now() - start_time).total_seconds()
+
+        # Parse Wine debug output for behavioral data (including API calls)
+        wine_output = result.get('stderr', '') + result.get('stdout', '')
+        behavioral_data = parse_wine_debug_output(wine_output)
+        result['filesystemChanges'] = behavioral_data.get('filesystem', {})
+        result['registryChanges'] = behavioral_data.get('registry', {})
+        result['dllLoads'] = behavioral_data.get('dlls', [])
+        result['apiCalls'] = behavioral_data.get('apiCalls', [])
+        result['mitreTechniques'] = behavioral_data.get('mitreTechniques', [])
+        result['networkActivity'] = behavioral_data.get('networkActivity', {})
+
         return result
 
     def cleanup(self):

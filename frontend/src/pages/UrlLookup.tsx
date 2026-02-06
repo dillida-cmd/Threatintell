@@ -1,8 +1,9 @@
 import { useState, lazy, Suspense } from 'react'
-import { Search, Link, Shield, AlertTriangle, Camera, ExternalLink, Globe, ArrowRight, X, ZoomIn } from 'lucide-react'
+import { Search, Link, Shield, AlertTriangle, Camera, ExternalLink, Globe, ArrowRight, X, ZoomIn, Server, Mail, Clock, CheckCircle, XCircle, Database, ShieldCheck, ShieldX } from 'lucide-react'
 import { lookupUrlThreat, analyzeUrl } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
+import AIValidation from '../components/AIValidation'
 import { defangUrl, defangIp, defangDomain } from '../utils/defang'
 
 // Lazy load the attack flow diagram
@@ -196,7 +197,13 @@ export default function UrlLookup() {
 function ThreatResults({ results }: { results: any }) {
   const summary = results.summary || {}
   const sources = results.sources || {}
-  const riskScore = summary.riskScore || 0
+  const aiValidation = results.aiValidation || {}
+
+  // Use AI-validated score if available, otherwise fall back to original
+  const hasAiValidation = results.aiValidation && typeof aiValidation.validatedScore === 'number'
+  const riskScore = hasAiValidation ? aiValidation.validatedScore : (summary.riskScore || 0)
+  const isMalicious = hasAiValidation ? aiValidation.validatedMalicious : summary.isMalicious
+  const recommendation = hasAiValidation ? aiValidation.recommendation : null
 
   return (
     <div className="space-y-6">
@@ -215,35 +222,43 @@ function ThreatResults({ results }: { results: any }) {
             {defangUrl(results.url)}
           </code>
           <div className="flex flex-wrap gap-2 mb-4">
-            {summary.isMalicious ? (
+            {isMalicious ? (
               <span className="badge badge-danger">MALICIOUS</span>
             ) : (
               <span className="badge badge-success">CLEAN</span>
             )}
             {sources.virustotal?.malicious > 0 && (
-              <span className="badge badge-danger">{sources.virustotal.malicious} Detections</span>
+              <span className="badge badge-warning">{sources.virustotal.malicious} Detection{sources.virustotal.malicious > 1 ? 's' : ''}</span>
             )}
             {sources.urlhaus?.threat && (
               <span className="badge badge-danger">{sources.urlhaus.threat}</span>
             )}
+            {hasAiValidation && aiValidation.confidence && (
+              <span className="badge badge-info">AI Confidence: {aiValidation.confidence}%</span>
+            )}
           </div>
 
-          {/* AI Verdict */}
-          {summary.verdict && (
+          {/* AI Recommendation (primary) or Original Verdict (fallback) */}
+          {(recommendation || summary.verdict) && (
             <div className={`p-4 rounded-lg ${
-              summary.isMalicious
+              isMalicious
                 ? 'bg-red-500/10 border border-red-500/30'
                 : 'bg-green-500/10 border border-green-500/30'
             }`}>
               <p className={`text-sm leading-relaxed ${
-                summary.isMalicious ? 'text-red-300' : 'text-green-300'
+                isMalicious ? 'text-red-300' : 'text-green-300'
               }`}>
-                {summary.verdict}
+                {recommendation || summary.verdict}
               </p>
             </div>
           )}
         </div>
       </div>
+
+      {/* AI Risk Validation Details */}
+      {results.aiValidation && (
+        <AIValidation validation={results.aiValidation} />
+      )}
 
       {/* VirusTotal */}
       {sources.virustotal && (
@@ -350,6 +365,266 @@ function ThreatResults({ results }: { results: any }) {
             </div>
           )}
         </div>
+      )}
+
+      {/* DNS Intelligence */}
+      {results.dns && !results.dns.error && (
+        <div className="card">
+          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <Server className="h-5 w-5 text-primary-500" />
+            DNS Intelligence
+          </h3>
+
+          {/* DNS Records */}
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+            {/* A Records */}
+            {results.dns.records?.A?.length > 0 && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <h4 className="text-cyan-400 text-sm font-semibold mb-2">A Records (IPv4)</h4>
+                <div className="space-y-1">
+                  {results.dns.records.A.map((ip: string, i: number) => (
+                    <code key={i} className="block text-xs text-gray-300">{defangIp(ip)}</code>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* AAAA Records */}
+            {results.dns.records?.AAAA?.length > 0 && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <h4 className="text-cyan-400 text-sm font-semibold mb-2">AAAA Records (IPv6)</h4>
+                <div className="space-y-1">
+                  {results.dns.records.AAAA.map((ip: string, i: number) => (
+                    <code key={i} className="block text-xs text-gray-300 break-all">{defangIp(ip)}</code>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* MX Records */}
+            {results.dns.records?.MX?.length > 0 && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <h4 className="text-purple-400 text-sm font-semibold mb-2 flex items-center gap-1">
+                  <Mail className="h-3 w-3" /> MX Records
+                </h4>
+                <div className="space-y-1">
+                  {results.dns.records.MX.map((mx: any, i: number) => (
+                    <div key={i} className="text-xs">
+                      <span className="text-gray-500">[{mx.priority}]</span>{' '}
+                      <code className="text-gray-300">{defangDomain(mx.host)}</code>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* NS Records */}
+            {results.dns.records?.NS?.length > 0 && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <h4 className="text-blue-400 text-sm font-semibold mb-2">Name Servers</h4>
+                <div className="space-y-1">
+                  {results.dns.records.NS.map((ns: string, i: number) => (
+                    <code key={i} className="block text-xs text-gray-300">{defangDomain(ns)}</code>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* TXT Records */}
+            {results.dns.records?.TXT?.length > 0 && (
+              <div className="p-3 bg-dark-500 rounded-lg md:col-span-2">
+                <h4 className="text-yellow-400 text-sm font-semibold mb-2">TXT Records</h4>
+                <div className="space-y-1 max-h-32 overflow-y-auto">
+                  {results.dns.records.TXT.map((txt: string, i: number) => (
+                    <code key={i} className="block text-xs text-gray-300 break-all">{txt}</code>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Email Security Section */}
+          {results.dns.emailSecurity && (
+            <div className="border-t border-dark-300 pt-4">
+              <h4 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                <ShieldCheck className="h-5 w-5 text-green-500" />
+                Email Security
+              </h4>
+
+              <div className="grid md:grid-cols-3 gap-4">
+                {/* SPF */}
+                <div className={`p-3 rounded-lg ${results.dns.emailSecurity.spf?.valid ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    {results.dns.emailSecurity.spf?.valid ? (
+                      <CheckCircle className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <XCircle className="h-4 w-4 text-red-500" />
+                    )}
+                    <h5 className="font-semibold text-sm">SPF Record</h5>
+                  </div>
+                  {results.dns.emailSecurity.spf?.valid ? (
+                    <div className="text-xs">
+                      <div className="text-gray-400 mb-1">Policy: <span className={`font-medium ${results.dns.emailSecurity.spf.details?.all === 'fail' ? 'text-green-400' : results.dns.emailSecurity.spf.details?.all === 'softfail' ? 'text-yellow-400' : 'text-red-400'}`}>
+                        {results.dns.emailSecurity.spf.details?.all || 'unknown'}
+                      </span></div>
+                      {results.dns.emailSecurity.spf.details?.includes?.length > 0 && (
+                        <div className="text-gray-500">Includes: {results.dns.emailSecurity.spf.details.includes.slice(0, 3).join(', ')}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-red-400">No SPF record found</p>
+                  )}
+                </div>
+
+                {/* DMARC */}
+                <div className={`p-3 rounded-lg ${results.dns.emailSecurity.dmarc?.valid ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    {results.dns.emailSecurity.dmarc?.valid ? (
+                      <CheckCircle className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <XCircle className="h-4 w-4 text-red-500" />
+                    )}
+                    <h5 className="font-semibold text-sm">DMARC Record</h5>
+                  </div>
+                  {results.dns.emailSecurity.dmarc?.valid ? (
+                    <div className="text-xs">
+                      <div className="text-gray-400 mb-1">Policy: <span className={`font-medium ${results.dns.emailSecurity.dmarc.details?.policy === 'reject' ? 'text-green-400' : results.dns.emailSecurity.dmarc.details?.policy === 'quarantine' ? 'text-yellow-400' : 'text-red-400'}`}>
+                        {results.dns.emailSecurity.dmarc.details?.policy || 'none'}
+                      </span></div>
+                      {results.dns.emailSecurity.dmarc.details?.rua && (
+                        <div className="text-gray-500 truncate">Reports: {results.dns.emailSecurity.dmarc.details.rua}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-red-400">No DMARC record found</p>
+                  )}
+                </div>
+
+                {/* DKIM */}
+                <div className={`p-3 rounded-lg ${Array.isArray(results.dns.emailSecurity.dkim) && results.dns.emailSecurity.dkim.length > 0 ? 'bg-green-500/10 border border-green-500/30' : 'bg-yellow-500/10 border border-yellow-500/30'}`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    {Array.isArray(results.dns.emailSecurity.dkim) && results.dns.emailSecurity.dkim.length > 0 ? (
+                      <CheckCircle className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 text-yellow-500" />
+                    )}
+                    <h5 className="font-semibold text-sm">DKIM Records</h5>
+                  </div>
+                  {Array.isArray(results.dns.emailSecurity.dkim) && results.dns.emailSecurity.dkim.length > 0 ? (
+                    <div className="text-xs">
+                      <div className="text-gray-400">Found {results.dns.emailSecurity.dkim.length} selector(s):</div>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {results.dns.emailSecurity.dkim.map((d: any, i: number) => (
+                          <span key={i} className="badge badge-success text-xs">{d.selector}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-yellow-400">No common DKIM selectors found</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Blocklist Status */}
+          {results.dns.blocklists?.length > 0 && (
+            <div className="border-t border-dark-300 pt-4 mt-4">
+              <h4 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                <Database className="h-5 w-5 text-orange-500" />
+                Blocklist Status
+              </h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {results.dns.blocklists.map((bl: any, i: number) => (
+                  <div key={i} className={`p-2 rounded-lg flex items-center gap-2 ${bl.listed ? 'bg-red-500/20 border border-red-500/30' : 'bg-green-500/10 border border-green-500/30'}`}>
+                    {bl.listed ? (
+                      <ShieldX className="h-4 w-4 text-red-500 flex-shrink-0" />
+                    ) : (
+                      <ShieldCheck className="h-4 w-4 text-green-500 flex-shrink-0" />
+                    )}
+                    <span className={`text-xs ${bl.listed ? 'text-red-400' : 'text-green-400'}`}>{bl.blocklist}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* WHOIS Information */}
+      {results.whois && !results.whois.error && (
+        <div className="card">
+          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <Globe className="h-5 w-5 text-primary-500" />
+            Domain WHOIS
+          </h3>
+
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {results.whois.registrar && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <div className="text-gray-400 text-xs mb-1">Registrar</div>
+                <div className="text-white text-sm font-medium truncate">{results.whois.registrar}</div>
+              </div>
+            )}
+
+            {results.whois.domainAge && (
+              <div className={`p-3 rounded-lg ${results.whois.domainAge.days < 30 ? 'bg-red-500/20' : results.whois.domainAge.days < 365 ? 'bg-yellow-500/20' : 'bg-dark-500'}`}>
+                <div className="text-gray-400 text-xs mb-1 flex items-center gap-1">
+                  <Clock className="h-3 w-3" /> Domain Age
+                </div>
+                <div className={`text-sm font-medium ${results.whois.domainAge.days < 30 ? 'text-red-400' : results.whois.domainAge.days < 365 ? 'text-yellow-400' : 'text-white'}`}>
+                  {results.whois.domainAge.years} years ({results.whois.domainAge.days} days)
+                </div>
+              </div>
+            )}
+
+            {results.whois.creationDate && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <div className="text-gray-400 text-xs mb-1">Created</div>
+                <div className="text-white text-sm">{new Date(results.whois.creationDate).toLocaleDateString()}</div>
+              </div>
+            )}
+
+            {results.whois.expirationDate && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <div className="text-gray-400 text-xs mb-1">Expires</div>
+                <div className="text-white text-sm">{new Date(results.whois.expirationDate).toLocaleDateString()}</div>
+              </div>
+            )}
+
+            {results.whois.org && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <div className="text-gray-400 text-xs mb-1">Organization</div>
+                <div className="text-white text-sm truncate">{results.whois.org}</div>
+              </div>
+            )}
+
+            {results.whois.country && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <div className="text-gray-400 text-xs mb-1">Country</div>
+                <div className="text-white text-sm">{results.whois.country}</div>
+              </div>
+            )}
+
+            {results.whois.nameServers?.length > 0 && (
+              <div className="p-3 bg-dark-500 rounded-lg md:col-span-2">
+                <div className="text-gray-400 text-xs mb-1">Name Servers</div>
+                <div className="flex flex-wrap gap-1">
+                  {results.whois.nameServers.slice(0, 4).map((ns: string, i: number) => (
+                    <span key={i} className="badge badge-info text-xs">{defangDomain(ns?.toLowerCase())}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Attack Flow Diagram */}
+      {results.attackFlow && (
+        <Suspense fallback={<div className="card"><LoadingSpinner message="Loading flow diagram..." /></div>}>
+          <AttackFlowDiagram attackFlow={results.attackFlow} />
+        </Suspense>
       )}
     </div>
   )
@@ -493,9 +768,9 @@ function AnalysisResults({ results }: { results: any }) {
       )}
 
       {/* Attack Flow Diagram - Visual representation of URL redirect chain */}
-      {(redirectChain.length > 0 || analysis.finalUrl) && (
+      {(redirectChain.length > 0 || analysis.finalUrl || results.attackFlow) && (
         <Suspense fallback={<div className="card"><LoadingSpinner message="Loading flow diagram..." /></div>}>
-          <AttackFlowDiagram analysis={analysis} />
+          <AttackFlowDiagram analysis={analysis} attackFlow={results.attackFlow} />
         </Suspense>
       )}
     </div>

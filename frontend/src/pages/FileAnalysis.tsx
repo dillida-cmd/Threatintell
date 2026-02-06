@@ -6,6 +6,7 @@ import {
 import { analyzeFile } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
+import AIValidation from '../components/AIValidation'
 import { defangUrl, defangIp, defangDomain, defangEmail } from '../utils/defang'
 
 // Lazy load the attack flow diagram for better performance
@@ -571,6 +572,11 @@ function EmailResultsView({ analysis, riskScore }: { analysis: any; riskScore: n
         </div>
       </div>
 
+      {/* AI Risk Validation */}
+      {analysis.aiValidation && (
+        <AIValidation validation={analysis.aiValidation} />
+      )}
+
       {/* Phishing Indicators */}
       {phishing.length > 0 && (
         <div className="card glow-red">
@@ -676,6 +682,11 @@ function PdfResultsView({ analysis, riskScore }: { analysis: any; riskScore: num
           )}
         </div>
       </div>
+
+      {/* AI Risk Validation */}
+      {analysis.aiValidation && (
+        <AIValidation validation={analysis.aiValidation} />
+      )}
 
       {/* Security Analysis */}
       <div className="card">
@@ -1125,6 +1136,11 @@ function SandboxResultsView({ analysis, riskScore }: { analysis: any; riskScore:
         </div>
       </div>
 
+      {/* AI Risk Validation */}
+      {analysis.aiValidation && (
+        <AIValidation validation={analysis.aiValidation} />
+      )}
+
       {/* Process Tree */}
       {processTree.length > 0 && (
         <div className="card">
@@ -1228,7 +1244,7 @@ function SandboxResultsView({ analysis, riskScore }: { analysis: any; riskScore:
 
       {/* Attack Flow Diagram - Visual representation of malware behavior */}
       <Suspense fallback={<div className="card"><LoadingSpinner message="Loading attack flow diagram..." /></div>}>
-        <AttackFlowDiagram analysis={analysis} />
+        <AttackFlowDiagram analysis={analysis} attackFlow={analysis.attackFlow} />
       </Suspense>
 
       {/* Execution Screenshots */}

@@ -51,6 +51,22 @@ except ImportError:
     SANDBOX_AVAILABLE = False
     print("[Warning] sandbox_service module not available")
 
+# Import AI risk validator
+try:
+    import ai_validator
+    AI_VALIDATOR_AVAILABLE = True
+except ImportError:
+    AI_VALIDATOR_AVAILABLE = False
+    print("[Warning] ai_validator module not available")
+
+# Import AI flow analyzer
+try:
+    import ai_flow_analyzer
+    AI_FLOW_AVAILABLE = True
+except ImportError:
+    AI_FLOW_AVAILABLE = False
+    print("[Warning] ai_flow_analyzer module not available")
+
 PORT = 3000
 MAX_FILE_SIZE = 15 * 1024 * 1024  # 15MB
 DATABASE_FILE = os.path.join(os.path.dirname(__file__), 'analysis_results.db')
@@ -3007,6 +3023,17 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
 
             if THREAT_INTEL_AVAILABLE:
                 result = threat_intel.investigate_ip(ip)
+
+                # Apply AI validation to adjust risk score
+                if AI_VALIDATOR_AVAILABLE:
+                    ai_analysis = ai_validator.validate_ip(result)
+                    result['aiValidation'] = ai_analysis
+                    # Update summary with AI-validated score
+                    if 'summary' in result:
+                        result['summary']['aiValidatedScore'] = ai_analysis.get('validatedScore', result['summary'].get('riskScore', 0))
+                        result['summary']['aiConfidence'] = ai_analysis.get('confidence', 0)
+                        result['summary']['aiRecommendation'] = ai_analysis.get('recommendation', '')
+
                 self.send_json(result)
             else:
                 self.send_json({'error': 'Threat intelligence module not available'}, 503)
@@ -3037,6 +3064,25 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                 if normalized_url != url:
                     result['originalUrl'] = url
                     result['normalizedUrl'] = normalized_url
+
+                # Apply AI validation to adjust risk score
+                if AI_VALIDATOR_AVAILABLE:
+                    ai_analysis = ai_validator.validate_url(result)
+                    result['aiValidation'] = ai_analysis
+                    # Update summary with AI-validated score
+                    if 'summary' in result:
+                        result['summary']['aiValidatedScore'] = ai_analysis.get('validatedScore', result['summary'].get('riskScore', 0))
+                        result['summary']['aiConfidence'] = ai_analysis.get('confidence', 0)
+                        result['summary']['aiRecommendation'] = ai_analysis.get('recommendation', '')
+
+                # Generate AI attack flow diagram
+                if AI_FLOW_AVAILABLE:
+                    try:
+                        flow_analysis = ai_flow_analyzer.analyze_url_flow(result)
+                        result['attackFlow'] = flow_analysis
+                    except Exception as e:
+                        print(f"[Warning] URL flow analysis failed: {e}")
+
                 self.send_json(result)
             else:
                 self.send_json({'error': 'Threat intelligence module not available'}, 503)
@@ -3060,6 +3106,17 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
 
             if THREAT_INTEL_AVAILABLE:
                 result = threat_intel.investigate_hash(file_hash)
+
+                # Apply AI validation to adjust risk score
+                if AI_VALIDATOR_AVAILABLE:
+                    ai_analysis = ai_validator.validate_hash(result)
+                    result['aiValidation'] = ai_analysis
+                    # Update summary with AI-validated score
+                    if 'summary' in result:
+                        result['summary']['aiValidatedScore'] = ai_analysis.get('validatedScore', result['summary'].get('riskScore', 0))
+                        result['summary']['aiConfidence'] = ai_analysis.get('confidence', 0)
+                        result['summary']['aiRecommendation'] = ai_analysis.get('recommendation', '')
+
                 self.send_json(result)
             else:
                 self.send_json({'error': 'Threat intelligence module not available'}, 503)
@@ -3616,6 +3673,24 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                             result['summary']['verdict'] = 'MALICIOUS - Known malware'
                             result['summary']['riskAssessment'] = 'This file is identified as KNOWN MALWARE in threat intelligence databases. Do NOT execute under any circumstances.'
 
+            # Apply AI validation to sandbox results
+            if AI_VALIDATOR_AVAILABLE and result.get('success'):
+                ai_analysis = ai_validator.validate_sandbox(result)
+                result['aiValidation'] = ai_analysis
+                # Update summary with AI-validated score
+                result['aiValidatedScore'] = ai_analysis.get('validatedScore', result.get('riskScore', 0))
+                result['aiValidatedRiskLevel'] = ai_analysis.get('validatedRiskLevel', result.get('riskLevel', 'Unknown'))
+                result['aiConfidence'] = ai_analysis.get('confidence', 0)
+                result['aiRecommendation'] = ai_analysis.get('recommendation', '')
+
+            # Generate AI attack flow diagram for sandbox
+            if AI_FLOW_AVAILABLE and result.get('success'):
+                try:
+                    flow_analysis = ai_flow_analyzer.analyze_sandbox_flow(result)
+                    result['attackFlow'] = flow_analysis
+                except Exception as e:
+                    print(f"[Warning] Sandbox flow analysis failed: {e}")
+
             # Store result if analysis was successful
             if result.get('success'):
                 storage = get_storage()
@@ -3689,6 +3764,14 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             if normalized_url != url:
                 result['originalUrl'] = url
                 result['normalizedUrl'] = normalized_url
+
+            # Generate AI attack flow diagram
+            if AI_FLOW_AVAILABLE and result.get('success'):
+                try:
+                    flow_analysis = ai_flow_analyzer.analyze_url_flow(result.get('analysis', result))
+                    result['attackFlow'] = flow_analysis
+                except Exception as e:
+                    print(f"[Warning] Flow analysis failed: {e}")
 
             # Store result if analysis was successful
             if result.get('success'):
@@ -3899,6 +3982,14 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             # Generate AI-style verdict for file analysis
             if result.get('success'):
                 result['verdict'] = generate_file_analysis_verdict(analysis_type, result, filename)
+
+            # Apply AI validation to file analysis results
+            if AI_VALIDATOR_AVAILABLE and result.get('success') and analysis_type in ['email', 'pdf', 'office']:
+                ai_analysis = ai_validator.validate_file(result, analysis_type)
+                result['aiValidation'] = ai_analysis
+                result['aiValidatedScore'] = ai_analysis.get('validatedScore', result.get('riskScore', 0))
+                result['aiConfidence'] = ai_analysis.get('confidence', 0)
+                result['aiRecommendation'] = ai_analysis.get('recommendation', '')
 
             # If analysis successful, store results
             if result.get('success'):

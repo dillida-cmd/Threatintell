@@ -1923,20 +1923,103 @@ def investigate_ip(ip: str) -> Dict:
             except Exception as e:
                 results['sources'][service_name] = {'error': str(e)}
 
-    # Calculate overall risk score
+    # Calculate overall risk score using consensus-based approach
     if results['summary']['totalSources'] > 0:
-        if results['summary']['maliciousSources'] > 0:
+        sources = results['sources']
+
+        # Count clean vs suspicious indicators
+        clean_indicators = 0
+        threat_indicators = 0
+        threat_score = 0
+
+        # AbuseIPDB - most reliable for actual abuse reports
+        if 'abuseipdb' in sources:
+            abuse_data = sources['abuseipdb']
+            abuse_score = abuse_data.get('abuseScore', 0)
+            total_reports = abuse_data.get('totalReports', 0)
+            if abuse_score > 50 or total_reports > 10:
+                threat_indicators += 2  # Strong indicator
+                threat_score += abuse_score
+            elif abuse_score == 0 and total_reports == 0:
+                clean_indicators += 2  # Strong clean signal
+
+        # VirusTotal - very reliable
+        if 'virustotal' in sources:
+            vt_data = sources['virustotal']
+            vt_malicious = vt_data.get('malicious', 0)
+            vt_harmless = vt_data.get('harmless', 0)
+            if vt_malicious > 0:
+                threat_indicators += 2
+                threat_score += min(80, vt_malicious * 10)
+            elif vt_harmless > 50 and vt_malicious == 0:
+                clean_indicators += 2
+
+        # ThreatFox - known malware IOCs
+        if 'threatfox' in sources:
+            if sources['threatfox'].get('found'):
+                threat_indicators += 3  # Very strong indicator
+                threat_score += 80
+            else:
+                clean_indicators += 1
+
+        # AlienVault - threat pulses
+        if 'alienvault_otx' in sources:
+            pulse_count = sources['alienvault_otx'].get('pulseCount', 0)
+            if pulse_count > 5:
+                threat_indicators += 1
+                threat_score += min(40, pulse_count * 5)
+            elif pulse_count == 0:
+                clean_indicators += 1
+
+        # IPQualityScore - only trust if corroborated by other sources
+        # Hosting providers often get flagged as proxy/VPN incorrectly
+        if 'ipqualityscore' in sources:
+            ipqs = sources['ipqualityscore']
+            fraud_score = ipqs.get('fraudScore', 0)
+            is_hosting = 'hosting' in str(ipqs.get('isp', '')).lower() or \
+                        'hosting' in str(ipqs.get('organization', '')).lower() or \
+                        ipqs.get('connectionType', '') in ['Data Center', 'Corporate', 'Premium required.']
+
+            # Only count as threat if: high fraud score AND corroborated by other source
+            # OR very high fraud score with recent abuse flag
+            if fraud_score > 85 and ipqs.get('recentAbuse') and threat_indicators > 0:
+                threat_indicators += 1
+                threat_score += fraud_score // 2
+            elif fraud_score > 75 and not is_hosting and threat_indicators > 0:
+                threat_indicators += 1
+                threat_score += fraud_score // 3
+            elif fraud_score < 30:
+                clean_indicators += 1
+
+        # GreyNoise - scanner detection (informational, not necessarily malicious)
+        if 'greynoise' in sources:
+            gn = sources['greynoise']
+            if gn.get('noise') and gn.get('classification') == 'malicious':
+                threat_indicators += 1
+                threat_score += 30
+
+        # Consensus-based final score calculation
+        if threat_indicators > 0 and clean_indicators == 0:
+            # All sources agree it's bad
             results['summary']['isMalicious'] = True
-            results['summary']['riskScore'] = min(100, 30 + (results['summary']['maliciousSources'] * 20))
-
-        # Factor in specific scores
-        if 'abuseipdb' in results['sources']:
-            abuse_score = results['sources']['abuseipdb'].get('abuseScore', 0)
-            results['summary']['riskScore'] = max(results['summary']['riskScore'], abuse_score)
-
-        if 'ipqualityscore' in results['sources']:
-            fraud_score = results['sources']['ipqualityscore'].get('fraudScore', 0)
-            results['summary']['riskScore'] = max(results['summary']['riskScore'], fraud_score)
+            results['summary']['riskScore'] = min(100, threat_score // max(1, threat_indicators))
+        elif threat_indicators >= 2 and threat_indicators > clean_indicators:
+            # Multiple sources flag it, outweighs clean signals
+            results['summary']['isMalicious'] = True
+            results['summary']['riskScore'] = min(90, threat_score // threat_indicators)
+        elif threat_indicators == 1 and clean_indicators >= 2:
+            # Only 1 source flags it, multiple say clean - likely false positive
+            results['summary']['isMalicious'] = False
+            results['summary']['riskScore'] = min(30, threat_score // 4)
+            results['summary']['findings'].append("Note: Single-source detection with multiple clean signals - possible false positive")
+        elif threat_indicators == 1:
+            # Single flag, no strong clean signals
+            results['summary']['isMalicious'] = False
+            results['summary']['riskScore'] = min(50, threat_score // 2)
+        else:
+            # Clean across all sources
+            results['summary']['isMalicious'] = False
+            results['summary']['riskScore'] = 0
 
     # Generate AI-style verdict summary
     results['summary']['verdict'] = _generate_ip_verdict(ip, results)
@@ -2069,12 +2152,316 @@ def _generate_ip_verdict(ip: str, results: Dict) -> str:
     return " ".join(parts)
 
 
+# =============================================================================
+# DNS Intelligence Functions
+# =============================================================================
+
+def lookup_dns_records(domain: str) -> Dict:
+    """Comprehensive DNS lookup for a domain"""
+    try:
+        import dns.resolver
+        import dns.exception
+    except ImportError:
+        return {'error': 'dnspython not installed'}
+
+    results = {
+        'domain': domain,
+        'records': {},
+        'emailSecurity': {},
+        'blocklists': [],
+        'timestamp': datetime.now().isoformat()
+    }
+
+    resolver = dns.resolver.Resolver()
+    resolver.timeout = 5
+    resolver.lifetime = 10
+
+    # Standard DNS records
+    record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'CNAME', 'SOA']
+
+    for record_type in record_types:
+        try:
+            answers = resolver.resolve(domain, record_type)
+            records = []
+            for rdata in answers:
+                if record_type == 'MX':
+                    records.append({
+                        'priority': rdata.preference,
+                        'host': str(rdata.exchange).rstrip('.')
+                    })
+                elif record_type == 'SOA':
+                    records.append({
+                        'mname': str(rdata.mname).rstrip('.'),
+                        'rname': str(rdata.rname).rstrip('.'),
+                        'serial': rdata.serial,
+                        'refresh': rdata.refresh,
+                        'retry': rdata.retry,
+                        'expire': rdata.expire,
+                        'minimum': rdata.minimum
+                    })
+                else:
+                    records.append(str(rdata).strip('"'))
+            results['records'][record_type] = records
+        except dns.resolver.NoAnswer:
+            pass
+        except dns.resolver.NXDOMAIN:
+            results['records']['error'] = 'Domain does not exist (NXDOMAIN)'
+            break
+        except dns.exception.Timeout:
+            pass
+        except Exception as e:
+            pass
+
+    # Extract email security records from TXT
+    txt_records = results['records'].get('TXT', [])
+    for txt in txt_records:
+        txt_lower = txt.lower()
+        if txt_lower.startswith('v=spf1'):
+            results['emailSecurity']['spf'] = {
+                'record': txt,
+                'valid': True,
+                'details': _parse_spf(txt)
+            }
+        elif '_dmarc' in domain.lower() or txt_lower.startswith('v=dmarc1'):
+            results['emailSecurity']['dmarc'] = {
+                'record': txt,
+                'valid': True,
+                'details': _parse_dmarc(txt)
+            }
+
+    # Lookup DMARC specifically
+    try:
+        dmarc_answers = resolver.resolve(f'_dmarc.{domain}', 'TXT')
+        for rdata in dmarc_answers:
+            txt = str(rdata).strip('"')
+            if txt.lower().startswith('v=dmarc1'):
+                results['emailSecurity']['dmarc'] = {
+                    'record': txt,
+                    'valid': True,
+                    'details': _parse_dmarc(txt)
+                }
+                break
+    except:
+        results['emailSecurity']['dmarc'] = {'record': None, 'valid': False, 'details': 'No DMARC record found'}
+
+    # Try common DKIM selectors
+    dkim_selectors = ['default', 'google', 'selector1', 'selector2', 'k1', 'mail', 'dkim', 's1', 's2']
+    dkim_found = []
+    for selector in dkim_selectors:
+        try:
+            dkim_answers = resolver.resolve(f'{selector}._domainkey.{domain}', 'TXT')
+            for rdata in dkim_answers:
+                txt = str(rdata).strip('"')
+                if 'v=dkim1' in txt.lower() or 'p=' in txt:
+                    dkim_found.append({
+                        'selector': selector,
+                        'record': txt[:100] + '...' if len(txt) > 100 else txt,
+                        'valid': True
+                    })
+                    break
+        except:
+            pass
+
+    if dkim_found:
+        results['emailSecurity']['dkim'] = dkim_found
+    else:
+        results['emailSecurity']['dkim'] = {'found': False, 'selectorsChecked': dkim_selectors}
+
+    # Check DNSBL blocklists
+    results['blocklists'] = check_domain_blocklists(domain)
+
+    return results
+
+
+def _parse_spf(spf_record: str) -> Dict:
+    """Parse SPF record details"""
+    details = {
+        'mechanisms': [],
+        'includes': [],
+        'all': 'neutral'
+    }
+
+    parts = spf_record.split()
+    for part in parts:
+        part_lower = part.lower()
+        if part_lower.startswith('include:'):
+            details['includes'].append(part[8:])
+        elif part_lower.startswith('a:') or part_lower.startswith('mx:') or part_lower.startswith('ip4:') or part_lower.startswith('ip6:'):
+            details['mechanisms'].append(part)
+        elif part_lower in ['+all', '-all', '~all', '?all']:
+            all_map = {'+all': 'pass', '-all': 'fail', '~all': 'softfail', '?all': 'neutral'}
+            details['all'] = all_map.get(part_lower, 'unknown')
+
+    return details
+
+
+def _parse_dmarc(dmarc_record: str) -> Dict:
+    """Parse DMARC record details"""
+    details = {
+        'policy': 'none',
+        'subdomain_policy': None,
+        'percent': 100,
+        'rua': None,
+        'ruf': None,
+        'adkim': 'relaxed',
+        'aspf': 'relaxed'
+    }
+
+    parts = dmarc_record.split(';')
+    for part in parts:
+        part = part.strip()
+        if '=' in part:
+            key, value = part.split('=', 1)
+            key = key.strip().lower()
+            value = value.strip()
+
+            if key == 'p':
+                details['policy'] = value
+            elif key == 'sp':
+                details['subdomain_policy'] = value
+            elif key == 'pct':
+                try:
+                    details['percent'] = int(value)
+                except:
+                    pass
+            elif key == 'rua':
+                details['rua'] = value
+            elif key == 'ruf':
+                details['ruf'] = value
+            elif key == 'adkim':
+                details['adkim'] = 'strict' if value.lower() == 's' else 'relaxed'
+            elif key == 'aspf':
+                details['aspf'] = 'strict' if value.lower() == 's' else 'relaxed'
+
+    return details
+
+
+def check_domain_blocklists(domain: str) -> List[Dict]:
+    """Check domain against DNS-based blocklists"""
+    try:
+        import dns.resolver
+    except ImportError:
+        return []
+
+    blocklists = [
+        {'name': 'Spamhaus DBL', 'zone': 'dbl.spamhaus.org', 'type': 'spam'},
+        {'name': 'SURBL', 'zone': 'multi.surbl.org', 'type': 'spam'},
+        {'name': 'URIBL', 'zone': 'multi.uribl.com', 'type': 'spam'},
+        {'name': 'Spamhaus ZEN', 'zone': 'zen.spamhaus.org', 'type': 'spam'},
+    ]
+
+    results = []
+    resolver = dns.resolver.Resolver()
+    resolver.timeout = 3
+    resolver.lifetime = 5
+
+    for bl in blocklists:
+        try:
+            query = f"{domain}.{bl['zone']}"
+            answers = resolver.resolve(query, 'A')
+            # If we get an answer, domain is listed
+            for rdata in answers:
+                results.append({
+                    'blocklist': bl['name'],
+                    'listed': True,
+                    'type': bl['type'],
+                    'response': str(rdata)
+                })
+                break
+        except dns.resolver.NXDOMAIN:
+            # Not listed - this is good
+            results.append({
+                'blocklist': bl['name'],
+                'listed': False,
+                'type': bl['type']
+            })
+        except:
+            # Timeout or error - skip
+            pass
+
+    return results
+
+
+def lookup_whois(domain: str) -> Dict:
+    """Lookup WHOIS information for a domain"""
+    try:
+        import whois
+    except ImportError:
+        return {'error': 'python-whois not installed'}
+
+    try:
+        w = whois.whois(domain)
+
+        # Handle date serialization
+        def serialize_date(d):
+            if d is None:
+                return None
+            if isinstance(d, list):
+                return serialize_date(d[0]) if d else None
+            if hasattr(d, 'isoformat'):
+                return d.isoformat()
+            return str(d)
+
+        # Handle list fields
+        def get_first(val):
+            if isinstance(val, list):
+                return val[0] if val else None
+            return val
+
+        result = {
+            'registrar': get_first(w.registrar),
+            'creationDate': serialize_date(w.creation_date),
+            'expirationDate': serialize_date(w.expiration_date),
+            'updatedDate': serialize_date(w.updated_date),
+            'nameServers': w.name_servers if isinstance(w.name_servers, list) else [w.name_servers] if w.name_servers else [],
+            'status': w.status if isinstance(w.status, list) else [w.status] if w.status else [],
+            'dnssec': w.dnssec if hasattr(w, 'dnssec') else None,
+            'org': get_first(w.org) if hasattr(w, 'org') else None,
+            'country': get_first(w.country) if hasattr(w, 'country') else None,
+        }
+
+        # Calculate domain age
+        if result['creationDate']:
+            try:
+                from datetime import datetime
+                if isinstance(result['creationDate'], str):
+                    created = datetime.fromisoformat(result['creationDate'].replace('Z', '+00:00'))
+                else:
+                    created = result['creationDate']
+                age_days = (datetime.now(created.tzinfo) if created.tzinfo else datetime.now() - created).days
+                result['domainAge'] = {
+                    'days': age_days,
+                    'years': round(age_days / 365, 1)
+                }
+            except:
+                pass
+
+        return result
+    except Exception as e:
+        return {'error': str(e)}
+
+
 def investigate_url(url: str) -> Dict:
-    """Investigate a URL across all enabled services"""
+    """Investigate a URL across all enabled services including DNS intelligence"""
+    from urllib.parse import urlparse
+
+    # Extract domain from URL
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc
+        # Remove port if present
+        if ':' in domain:
+            domain = domain.split(':')[0]
+    except:
+        domain = None
+
     results = {
         'url': url,
+        'domain': domain,
         'investigatedAt': datetime.now().isoformat(),
         'sources': {},
+        'dns': {},
+        'whois': {},
         'summary': {
             'isMalicious': False,
             'totalSources': 0,
@@ -2084,6 +2471,7 @@ def investigate_url(url: str) -> Dict:
         }
     }
 
+    # Threat intelligence services
     services = [
         ('virustotal', check_virustotal_url),
         ('urlhaus', check_urlhaus),
@@ -2108,6 +2496,46 @@ def investigate_url(url: str) -> Dict:
                         results['summary']['findings'].append(f"AlienVault: {result.get('pulseCount')} threat pulses")
             except Exception as e:
                 results['sources'][service_name] = {'error': str(e)}
+
+    # DNS Intelligence (if domain extracted)
+    if domain:
+        try:
+            dns_results = lookup_dns_records(domain)
+            if 'error' not in dns_results:
+                results['dns'] = dns_results
+
+                # Check for blocklist hits
+                blocklists = dns_results.get('blocklists', [])
+                listed_count = sum(1 for bl in blocklists if bl.get('listed'))
+                if listed_count > 0:
+                    results['summary']['findings'].append(f"Domain on {listed_count} blocklist(s)")
+                    results['summary']['riskScore'] = max(results['summary']['riskScore'], 30 + (listed_count * 15))
+
+                # Check email security
+                email_sec = dns_results.get('emailSecurity', {})
+                if email_sec.get('spf', {}).get('valid'):
+                    pass  # Good - has SPF
+                if not email_sec.get('dmarc', {}).get('valid'):
+                    results['summary']['findings'].append("Missing DMARC record")
+        except Exception as e:
+            results['dns'] = {'error': str(e)}
+
+        # WHOIS lookup
+        try:
+            whois_results = lookup_whois(domain)
+            if 'error' not in whois_results:
+                results['whois'] = whois_results
+
+                # Check domain age (new domains are suspicious)
+                domain_age = whois_results.get('domainAge', {})
+                if domain_age.get('days') and domain_age['days'] < 30:
+                    results['summary']['findings'].append(f"Domain only {domain_age['days']} days old")
+                    results['summary']['riskScore'] = max(results['summary']['riskScore'], 40)
+                elif domain_age.get('days') and domain_age['days'] < 90:
+                    results['summary']['findings'].append(f"Domain is {domain_age['days']} days old")
+                    results['summary']['riskScore'] = max(results['summary']['riskScore'], 20)
+        except Exception as e:
+            results['whois'] = {'error': str(e)}
 
     if results['summary']['maliciousSources'] > 0:
         results['summary']['isMalicious'] = True

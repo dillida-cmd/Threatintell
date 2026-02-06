@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useEffect, useState } from 'react'
+import { useMemo } from 'react'
 import ReactFlow, {
   Node,
   Edge,
@@ -9,698 +9,426 @@ import ReactFlow, {
   useEdgesState,
   MarkerType,
   Position,
-  BackgroundVariant,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 
-// Custom animated styles
-const customStyles = `
-  @keyframes pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.8; transform: scale(1.05); }
-  }
-
-  @keyframes glow {
-    0%, 100% { box-shadow: 0 0 5px currentColor, 0 0 10px currentColor; }
-    50% { box-shadow: 0 0 15px currentColor, 0 0 25px currentColor; }
-  }
-
-  @keyframes flowParticle {
-    0% { stroke-dashoffset: 24; }
-    100% { stroke-dashoffset: 0; }
-  }
-
-  .node-pulse {
-    animation: pulse 2s ease-in-out infinite;
-  }
-
-  .node-glow {
-    animation: glow 2s ease-in-out infinite;
-  }
-
-  .malicious-node {
-    animation: pulse 1s ease-in-out infinite;
-    box-shadow: 0 0 20px rgba(239, 68, 68, 0.6);
-  }
-
-  .c2-node {
-    animation: glow 1.5s ease-in-out infinite;
-  }
-
-  .react-flow__edge-path {
-    stroke-width: 2;
-  }
-
-  .animated-edge {
-    stroke-dasharray: 8;
-    animation: flowParticle 1s linear infinite;
-  }
-
-  .react-flow__node {
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
-  }
-
-  .react-flow__node:hover {
-    transform: scale(1.05);
-    z-index: 100;
-  }
-`
-
-// Inject styles
+// Custom styles for animation
 const StyleInjector = () => {
-  useEffect(() => {
-    const styleEl = document.createElement('style')
-    styleEl.textContent = customStyles
-    document.head.appendChild(styleEl)
-    return () => { document.head.removeChild(styleEl) }
-  }, [])
-  return null
-}
-
-// Icon components as SVG for better rendering
-const ProcessIcon = () => (
-  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-  </svg>
-)
-
-const NetworkIcon = () => (
-  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
-  </svg>
-)
-
-const FileIcon = () => (
-  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-  </svg>
-)
-
-const AlertIcon = () => (
-  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-  </svg>
-)
-
-const ServerIcon = () => (
-  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
-  </svg>
-)
-
-const CpuIcon = () => (
-  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-  </svg>
-)
-
-const ShieldIcon = () => (
-  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-  </svg>
-)
-
-// Custom node component for processes
-function ProcessNode({ data }: { data: any }) {
-  const isSuspicious = data.suspicious
-  const baseClass = isSuspicious
-    ? 'bg-gradient-to-br from-red-900/80 to-red-800/60 border-red-500 malicious-node'
-    : 'bg-gradient-to-br from-blue-900/80 to-blue-800/60 border-blue-500 node-pulse'
-  const textColor = isSuspicious ? 'text-red-300' : 'text-blue-300'
-
   return (
-    <div className={`px-4 py-3 rounded-xl border-2 ${baseClass} min-w-[150px] backdrop-blur-sm`}>
-      <div className="flex items-center gap-2">
-        <div className={textColor}><ProcessIcon /></div>
-        <span className={`font-bold text-sm ${textColor}`}>{data.label}</span>
-      </div>
-      {data.pid && (
-        <div className="text-xs text-gray-400 mt-1 font-mono">PID: {data.pid}</div>
-      )}
-      {data.technique && (
-        <div className="text-xs text-orange-400 mt-1 font-semibold">{data.technique}</div>
-      )}
-    </div>
+    <style>{`
+      @keyframes pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.85; transform: scale(1.02); }
+      }
+      @keyframes flowLine {
+        0% { stroke-dashoffset: 24; }
+        100% { stroke-dashoffset: 0; }
+      }
+      .attack-flow-node {
+        transition: all 0.3s ease;
+      }
+      .attack-flow-node:hover {
+        transform: scale(1.05);
+        z-index: 100;
+      }
+      .react-flow__edge-path {
+        stroke-dasharray: 8 4;
+        animation: flowLine 1s linear infinite;
+      }
+    `}</style>
   )
 }
 
-// Custom node for network connections
-function NetworkNode({ data }: { data: any }) {
-  const isC2 = data.isC2 || data.suspicious
-  const baseClass = isC2
-    ? 'bg-gradient-to-br from-red-900/90 to-red-700/70 border-red-400 c2-node'
-    : 'bg-gradient-to-br from-purple-900/80 to-purple-800/60 border-purple-500 node-pulse'
-  const textColor = isC2 ? 'text-red-300' : 'text-purple-300'
+interface FlowNode {
+  id: string
+  type: string
+  label: string
+  description: string
+  data: any
+  step: number
+  severity: string
+}
+
+interface FlowEdge {
+  source: string
+  target: string
+  label: string
+  type: string
+}
+
+interface AttackFlow {
+  nodes: FlowNode[]
+  edges: FlowEdge[]
+  summary: any
+  timeline: any[]
+}
+
+interface AttackFlowDiagramProps {
+  analysis?: any
+  attackFlow?: AttackFlow
+}
+
+// Severity colors
+const severityColors: Record<string, { bg: string; border: string; text: string; glow: string }> = {
+  critical: { bg: '#450a0a', border: '#dc2626', text: '#fecaca', glow: 'rgba(220, 38, 38, 0.4)' },
+  high: { bg: '#431407', border: '#ea580c', text: '#fed7aa', glow: 'rgba(234, 88, 12, 0.4)' },
+  warning: { bg: '#422006', border: '#ca8a04', text: '#fef08a', glow: 'rgba(202, 138, 4, 0.3)' },
+  medium: { bg: '#422006', border: '#ca8a04', text: '#fef08a', glow: 'rgba(202, 138, 4, 0.3)' },
+  low: { bg: '#052e16', border: '#16a34a', text: '#bbf7d0', glow: 'rgba(22, 163, 74, 0.3)' },
+  info: { bg: '#172554', border: '#2563eb', text: '#bfdbfe', glow: 'rgba(37, 99, 235, 0.3)' },
+}
+
+// Node type icons
+const nodeIcons: Record<string, string> = {
+  entry: '👆',
+  dns: '🔍',
+  http: '🌐',
+  redirect: '↪️',
+  page: '📄',
+  render: '🖼️',
+  assessment: '📊',
+  file: '📁',
+  analysis: '🔬',
+  execution: '▶️',
+  process: '⚙️',
+  network: '📡',
+  c2: '💀',
+  threat: '⚠️',
+  ioc: '🎯',
+  evasion: '🛡️',
+  dll: '📦',
+  memory: '🧠',
+  shellcode: '💉',
+  registry: '🔑',
+}
+
+// Custom node component
+function FlowNodeComponent({ data }: { data: any }) {
+  const colors = severityColors[data.severity] || severityColors.info
+  const icon = nodeIcons[data.nodeType] || '📌'
+  const isCritical = data.severity === 'critical' || data.severity === 'high'
 
   return (
-    <div className={`px-4 py-3 rounded-xl border-2 ${baseClass} min-w-[150px] backdrop-blur-sm`}>
-      <div className="flex items-center gap-2">
-        <div className={textColor}><NetworkIcon /></div>
-        <span className={`font-bold text-sm ${textColor}`}>
-          {data.ip || data.domain || data.label}
-        </span>
-      </div>
-      {data.port && (
-        <div className="text-xs text-gray-400 mt-1 font-mono">:{data.port}</div>
-      )}
-      {data.protocol && (
-        <div className="text-xs text-gray-500 mt-1">{data.protocol}</div>
-      )}
-      {isC2 && (
-        <div className="text-xs text-red-300 mt-2 flex items-center gap-1 font-bold">
-          <AlertIcon /> C2 SERVER
+    <div
+      className="attack-flow-node"
+      style={{
+        background: `linear-gradient(135deg, ${colors.bg} 0%, ${colors.bg}dd 100%)`,
+        border: `2px solid ${colors.border}`,
+        borderRadius: '12px',
+        padding: '14px 18px',
+        minWidth: '180px',
+        maxWidth: '240px',
+        boxShadow: `0 4px 20px ${colors.glow}, inset 0 1px 0 rgba(255,255,255,0.1)`,
+        position: 'relative',
+        animation: isCritical ? 'pulse 2s ease-in-out infinite' : undefined,
+      }}
+    >
+      {/* Step number badge */}
+      {data.step && (
+        <div style={{
+          position: 'absolute',
+          top: '-12px',
+          left: '-12px',
+          background: `linear-gradient(135deg, ${colors.border} 0%, ${colors.border}cc 100%)`,
+          color: '#fff',
+          borderRadius: '50%',
+          width: '26px',
+          height: '26px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: '12px',
+          fontWeight: 700,
+          boxShadow: `0 2px 8px ${colors.glow}`,
+          border: '2px solid rgba(255,255,255,0.2)',
+        }}>
+          {data.step}
         </div>
       )}
-    </div>
-  )
-}
 
-// Custom node for file operations
-function FileNode({ data }: { data: any }) {
-  const colors: Record<string, { bg: string; border: string; text: string }> = {
-    created: { bg: 'from-green-900/80 to-green-800/60', border: 'border-green-500', text: 'text-green-300' },
-    modified: { bg: 'from-yellow-900/80 to-yellow-800/60', border: 'border-yellow-500', text: 'text-yellow-300' },
-    deleted: { bg: 'from-red-900/80 to-red-800/60', border: 'border-red-500', text: 'text-red-300' },
-    dropped: { bg: 'from-orange-900/80 to-orange-800/60', border: 'border-orange-500', text: 'text-orange-300' },
-  }
-  const color = colors[data.operation] || colors.created
-
-  return (
-    <div className={`px-4 py-3 rounded-xl border-2 bg-gradient-to-br ${color.bg} ${color.border} min-w-[140px] backdrop-blur-sm node-pulse`}>
-      <div className="flex items-center gap-2">
-        <div className={color.text}><FileIcon /></div>
-        <span className={`font-bold text-sm ${color.text} truncate max-w-[100px]`} title={data.label}>
+      {/* Icon and label */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+        <span style={{ fontSize: '20px', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))' }}>{icon}</span>
+        <span style={{
+          color: colors.text,
+          fontWeight: 600,
+          fontSize: '14px',
+          lineHeight: 1.2,
+        }}>
           {data.label}
         </span>
       </div>
-      <div className="text-xs text-gray-400 mt-1 capitalize font-semibold">{data.operation}</div>
-    </div>
-  )
-}
 
-// Custom node for IOCs/Techniques
-function IOCNode({ data }: { data: any }) {
-  const isMalicious = data.malicious
-  const baseClass = isMalicious
-    ? 'bg-gradient-to-br from-red-900/90 to-orange-900/70 border-red-400 malicious-node'
-    : 'bg-gradient-to-br from-orange-900/80 to-orange-800/60 border-orange-500'
-  const textColor = isMalicious ? 'text-red-300' : 'text-orange-300'
-
-  return (
-    <div className={`px-4 py-3 rounded-xl border-2 ${baseClass} min-w-[130px] backdrop-blur-sm`}>
-      <div className="flex items-center gap-2">
-        <div className={textColor}><ShieldIcon /></div>
-        <span className={`font-bold text-xs ${textColor}`}>{data.type}</span>
+      {/* Description */}
+      <div style={{
+        color: '#9ca3af',
+        fontSize: '11px',
+        marginTop: '4px',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      }}>
+        {data.description}
       </div>
-      <div className="text-xs text-gray-300 mt-1 truncate max-w-[110px]" title={data.value}>
-        {data.value}
-      </div>
-      {isMalicious && (
-        <div className="text-xs text-red-300 mt-1 font-bold flex items-center gap-1">
-          <AlertIcon /> MALICIOUS
-        </div>
-      )}
-    </div>
-  )
-}
-
-// Entry point node
-function EntryNode({ data }: { data: any }) {
-  return (
-    <div className="px-5 py-4 rounded-2xl border-2 bg-gradient-to-br from-indigo-900/90 to-purple-900/80 border-indigo-400 min-w-[180px] backdrop-blur-sm node-glow shadow-lg shadow-indigo-500/30">
-      <div className="flex items-center gap-2">
-        <div className="text-indigo-300"><CpuIcon /></div>
-        <span className="font-bold text-sm text-indigo-200">{data.label}</span>
-      </div>
-      {data.hash && (
-        <div className="text-xs text-gray-400 mt-2 font-mono bg-black/30 px-2 py-1 rounded truncate max-w-[160px]" title={data.hash}>
-          {data.hash.substring(0, 20)}...
-        </div>
-      )}
-      {data.type && (
-        <div className="text-xs text-indigo-300 mt-1 font-semibold uppercase">{data.type}</div>
-      )}
-    </div>
-  )
-}
-
-// URL redirect node
-function URLNode({ data }: { data: any }) {
-  const isSuspicious = data.suspicious
-  const statusColor = data.status >= 400 ? 'text-red-300' : data.status >= 300 ? 'text-yellow-300' : 'text-green-300'
-  const baseClass = isSuspicious
-    ? 'bg-gradient-to-br from-red-900/80 to-orange-900/60 border-orange-500 malicious-node'
-    : 'bg-gradient-to-br from-cyan-900/80 to-teal-900/60 border-cyan-500 node-pulse'
-
-  return (
-    <div className={`px-4 py-3 rounded-xl border-2 ${baseClass} min-w-[200px] max-w-[280px] backdrop-blur-sm`}>
-      <div className="flex items-center gap-2 mb-1">
-        <div className="text-cyan-300"><ServerIcon /></div>
-        {data.status && (
-          <span className={`font-bold text-sm ${statusColor} bg-black/30 px-2 py-0.5 rounded`}>
-            HTTP {data.status}
-          </span>
-        )}
-      </div>
-      <div className="text-xs text-gray-300 truncate font-mono bg-black/20 px-2 py-1 rounded" title={data.url}>
-        {data.url}
-      </div>
-      {isSuspicious && (
-        <div className="text-xs text-orange-300 mt-2 flex items-center gap-1 font-bold">
-          <AlertIcon /> SUSPICIOUS
-        </div>
-      )}
     </div>
   )
 }
 
 const nodeTypes = {
-  process: ProcessNode,
-  network: NetworkNode,
-  file: FileNode,
-  ioc: IOCNode,
-  entry: EntryNode,
-  url: URLNode,
+  flowNode: FlowNodeComponent,
 }
 
-interface AttackFlowProps {
-  analysis: any
-}
+// Generate flow from analysis when no AI flow is available
+function generateFallbackFlow(analysis: any): AttackFlow | null {
+  if (!analysis) return null
 
-export default function AttackFlowDiagram({ analysis }: AttackFlowProps) {
-  const [mounted, setMounted] = useState(false)
+  const nodes: FlowNode[] = []
+  const edges: FlowEdge[] = []
+  let step = 1
 
-  useEffect(() => {
-    setMounted(true)
-  }, [])
+  // Entry point
+  nodes.push({
+    id: 'entry',
+    type: 'entry',
+    label: 'User Action',
+    description: analysis.url ? 'Click URL' : 'Open File',
+    data: {},
+    step: step++,
+    severity: 'info'
+  })
 
-  // Build nodes and edges from analysis data
-  const { initialNodes, initialEdges } = useMemo(() => {
-    const nodes: Node[] = []
-    const edges: Edge[] = []
-    let nodeId = 0
-    let yOffset = 0
-    const xSpacing = 280
-    const ySpacing = 140
+  let prevId = 'entry'
 
-    const getNextId = () => `node-${nodeId++}`
-
-    // Entry point (the analyzed file/URL)
-    const entryId = getNextId()
-    const entryLabel = analysis.filename || analysis.url || 'Sample'
-    const displayLabel = entryLabel.length > 25 ? entryLabel.substring(0, 25) + '...' : entryLabel
-
+  // URL analysis
+  if (analysis.url) {
+    // DNS
     nodes.push({
-      id: entryId,
-      type: 'entry',
-      position: { x: 400, y: 0 },
-      data: {
-        label: displayLabel,
-        hash: analysis.fileAnalysis?.hashes?.sha256 || analysis.sha256,
-        type: analysis.fileAnalysis?.fileType || analysis.type || analysis.mode,
-      },
-      sourcePosition: Position.Bottom,
-      targetPosition: Position.Top,
+      id: 'dns',
+      type: 'dns',
+      label: 'DNS Lookup',
+      description: new URL(analysis.url).hostname,
+      data: {},
+      step: step++,
+      severity: 'info'
     })
-    yOffset += ySpacing
+    edges.push({ source: prevId, target: 'dns', label: 'Resolve', type: 'request' })
+    prevId = 'dns'
 
-    // URL redirect chain (for URL analysis) - show this prominently
+    // HTTP Request
+    nodes.push({
+      id: 'http',
+      type: 'http',
+      label: 'HTTP Request',
+      description: 'GET request sent',
+      data: {},
+      step: step++,
+      severity: 'info'
+    })
+    edges.push({ source: prevId, target: 'http', label: 'Connect', type: 'request' })
+    prevId = 'http'
+
+    // Redirects
     const redirectChain = analysis.redirectChain || []
-    if (redirectChain.length > 0 || analysis.finalUrl) {
-      let urlX = 100
-      let prevUrlId = entryId
-
-      // Add each redirect as a node
-      redirectChain.forEach((redirect: any, idx: number) => {
-        const urlId = getNextId()
-        const urlStr = redirect.redirectTo || redirect.url || ''
-        const displayUrl = urlStr.length > 40 ? urlStr.substring(0, 40) + '...' : urlStr
-
-        nodes.push({
-          id: urlId,
-          type: 'url',
-          position: { x: urlX, y: yOffset },
-          data: {
-            url: displayUrl,
-            fullUrl: urlStr,
-            status: redirect.statusCode,
-            suspicious: redirect.suspicious,
-          },
-          sourcePosition: Position.Right,
-          targetPosition: Position.Left,
-        })
-
-        edges.push({
-          id: `edge-url-${urlId}`,
-          source: prevUrlId,
-          target: urlId,
-          animated: true,
-          className: 'animated-edge',
-          style: { stroke: 'url(#gradient-cyan)', strokeWidth: 3 },
-          markerEnd: { type: MarkerType.ArrowClosed, color: '#06b6d4', width: 20, height: 20 },
-          label: redirect.statusCode ? `${redirect.statusCode}` : 'redirect',
-          labelStyle: { fill: '#9ca3af', fontSize: 11, fontWeight: 600 },
-          labelBgStyle: { fill: 'rgba(0,0,0,0.6)', fillOpacity: 0.8 },
-          labelBgPadding: [4, 8] as [number, number],
-          labelBgBorderRadius: 4,
-        })
-
-        prevUrlId = urlId
-        urlX += 300
+    redirectChain.forEach((redirect: any, i: number) => {
+      const url = typeof redirect === 'string' ? redirect : redirect.url
+      const nodeId = `redirect_${i}`
+      nodes.push({
+        id: nodeId,
+        type: 'redirect',
+        label: `Redirect ${i + 1}`,
+        description: new URL(url).hostname,
+        data: { url },
+        step: step++,
+        severity: 'warning'
       })
+      edges.push({ source: prevId, target: nodeId, label: '302', type: 'redirect' })
+      prevId = nodeId
+    })
 
-      // Final URL if different
-      if (analysis.finalUrl) {
-        const finalId = getNextId()
-        const finalUrl = analysis.finalUrl
-        const displayFinal = finalUrl.length > 40 ? finalUrl.substring(0, 40) + '...' : finalUrl
-
-        nodes.push({
-          id: finalId,
-          type: 'url',
-          position: { x: urlX, y: yOffset },
-          data: {
-            url: displayFinal,
-            fullUrl: finalUrl,
-            status: 200,
-            suspicious: false,
-          },
-          sourcePosition: Position.Bottom,
-          targetPosition: Position.Left,
-        })
-
-        if (prevUrlId !== entryId) {
-          edges.push({
-            id: `edge-final-${finalId}`,
-            source: prevUrlId,
-            target: finalId,
-            animated: true,
-            className: 'animated-edge',
-            style: { stroke: '#22c55e', strokeWidth: 3 },
-            markerEnd: { type: MarkerType.ArrowClosed, color: '#22c55e', width: 20, height: 20 },
-            label: 'final',
-            labelStyle: { fill: '#22c55e', fontSize: 11, fontWeight: 600 },
-            labelBgStyle: { fill: 'rgba(0,0,0,0.6)' },
-            labelBgPadding: [4, 8] as [number, number],
-            labelBgBorderRadius: 4,
-          })
-        }
-      }
-      yOffset += ySpacing
+    // Final page
+    if (analysis.finalUrl || redirectChain.length > 0) {
+      nodes.push({
+        id: 'final',
+        type: 'page',
+        label: 'Page Loaded',
+        description: analysis.finalUrl ? new URL(analysis.finalUrl).hostname : 'Response received',
+        data: {},
+        step: step++,
+        severity: 'info'
+      })
+      edges.push({ source: prevId, target: 'final', label: '200 OK', type: 'response' })
+      prevId = 'final'
     }
 
-    // Process tree
-    const processTree = analysis.processTree || analysis.process_tree || []
-    const processNodes: Record<string, string> = {}
-
-    if (processTree.length > 0) {
-      let processX = 100
-      processTree.forEach((proc: any, idx: number) => {
-        const procId = getNextId()
-        processNodes[proc.pid || idx] = procId
-        const procName = proc.name || proc.command?.split(' ')[0] || 'Process'
-
-        nodes.push({
-          id: procId,
-          type: 'process',
-          position: { x: processX, y: yOffset },
-          data: {
-            label: procName.length > 20 ? procName.substring(0, 20) + '...' : procName,
-            pid: proc.pid,
-            suspicious: proc.suspicious,
-            technique: proc.technique,
-          },
-          sourcePosition: Position.Bottom,
-          targetPosition: Position.Top,
-        })
-
-        // Connect to entry or parent
-        if (idx === 0) {
-          edges.push({
-            id: `edge-entry-${procId}`,
-            source: entryId,
-            target: procId,
-            animated: true,
-            className: 'animated-edge',
-            style: { stroke: 'url(#gradient-blue)', strokeWidth: 3 },
-            markerEnd: { type: MarkerType.ArrowClosed, color: '#6366f1', width: 20, height: 20 },
-            label: 'executes',
-            labelStyle: { fill: '#a5b4fc', fontSize: 11, fontWeight: 600 },
-            labelBgStyle: { fill: 'rgba(0,0,0,0.6)' },
-            labelBgPadding: [4, 8] as [number, number],
-            labelBgBorderRadius: 4,
-          })
-        }
-
-        // Process children
-        if (proc.children) {
-          proc.children.forEach((child: any, childIdx: number) => {
-            const childId = getNextId()
-            processNodes[child.pid || `${idx}-${childIdx}`] = childId
-            const childName = child.name || child.command?.split(' ')[0] || 'Child'
-
-            nodes.push({
-              id: childId,
-              type: 'process',
-              position: { x: processX + 60 + childIdx * 200, y: yOffset + ySpacing },
-              data: {
-                label: childName.length > 20 ? childName.substring(0, 20) + '...' : childName,
-                pid: child.pid,
-                suspicious: child.suspicious,
-              },
-              sourcePosition: Position.Bottom,
-              targetPosition: Position.Top,
-            })
-
-            edges.push({
-              id: `edge-${procId}-${childId}`,
-              source: procId,
-              target: childId,
-              animated: true,
-              className: 'animated-edge',
-              style: { stroke: '#3b82f6', strokeWidth: 2 },
-              markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6', width: 16, height: 16 },
-            })
-          })
-        }
-
-        processX += xSpacing
+    // Screenshot
+    if (analysis.screenshots?.length > 0) {
+      nodes.push({
+        id: 'screenshot',
+        type: 'render',
+        label: 'Page Captured',
+        description: `${analysis.screenshots.length} screenshot(s)`,
+        data: {},
+        step: step++,
+        severity: 'info'
       })
-      yOffset += ySpacing * 2
+      edges.push({ source: prevId, target: 'screenshot', label: 'Render', type: 'action' })
+      prevId = 'screenshot'
+    }
+  }
+
+  // Risk assessment
+  const riskScore = analysis.riskScore || 0
+  nodes.push({
+    id: 'risk',
+    type: 'assessment',
+    label: `Risk: ${riskScore}/100`,
+    description: analysis.riskLevel || (riskScore >= 70 ? 'Critical' : riskScore >= 50 ? 'High' : riskScore >= 30 ? 'Medium' : 'Low'),
+    data: {},
+    step: step++,
+    severity: riskScore >= 70 ? 'critical' : riskScore >= 50 ? 'high' : riskScore >= 30 ? 'medium' : 'low'
+  })
+  edges.push({ source: prevId, target: 'risk', label: 'Analyze', type: 'assessment' })
+
+  return {
+    nodes,
+    edges,
+    summary: {
+      totalSteps: nodes.length,
+      redirects: (analysis.redirectChain || []).length,
+    },
+    timeline: nodes.map(n => ({ step: n.step, label: n.label, type: n.type }))
+  }
+}
+
+export default function AttackFlowDiagram({ analysis, attackFlow }: AttackFlowDiagramProps) {
+  // Use provided attackFlow or generate fallback
+  const flowData = useMemo(() => {
+    if (attackFlow && attackFlow.nodes && attackFlow.nodes.length > 0) {
+      return attackFlow
+    }
+    return generateFallbackFlow(analysis)
+  }, [analysis, attackFlow])
+
+  // Convert to ReactFlow format
+  const { initialNodes, initialEdges } = useMemo(() => {
+    if (!flowData?.nodes) {
+      return { initialNodes: [], initialEdges: [] }
     }
 
-    // Network connections
-    const network = analysis.networkConnections || analysis.network_connections || []
-    const extractedIocs = analysis.extractedIocs || analysis.extracted_iocs || {}
-    const c2Ips = extractedIocs.ips || []
+    const horizontalGap = 300
+    const verticalGap = 100
 
-    if (network.length > 0) {
-      let netX = 50
-      network.slice(0, 6).forEach((conn: any) => {
-        const netId = getNextId()
-        const ip = conn.remoteIp || conn.ip || conn.destination
-        const isC2 = c2Ips.includes(ip) || conn.suspicious
+    // Position nodes in a flowing horizontal layout
+    const reactFlowNodes: Node[] = flowData.nodes.map((node, index) => {
+      const row = Math.floor(index / 4)
+      const col = index % 4
+      const isEvenRow = row % 2 === 0
 
-        nodes.push({
-          id: netId,
-          type: 'network',
-          position: { x: netX, y: yOffset },
-          data: {
-            ip: ip,
-            port: conn.remotePort || conn.port,
-            protocol: conn.protocol || 'TCP',
-            isC2: isC2,
-            suspicious: conn.suspicious,
-          },
-          sourcePosition: Position.Bottom,
-          targetPosition: Position.Top,
-        })
-
-        const sourceNode = Object.values(processNodes)[0] || entryId
-        edges.push({
-          id: `edge-net-${netId}`,
-          source: sourceNode,
-          target: netId,
-          animated: true,
-          className: isC2 ? 'animated-edge' : '',
-          style: { stroke: isC2 ? '#ef4444' : '#a855f7', strokeWidth: isC2 ? 4 : 2 },
-          markerEnd: { type: MarkerType.ArrowClosed, color: isC2 ? '#ef4444' : '#a855f7', width: isC2 ? 24 : 18, height: isC2 ? 24 : 18 },
-          label: isC2 ? 'C2' : 'connect',
-          labelStyle: { fill: isC2 ? '#fca5a5' : '#c4b5fd', fontSize: 11, fontWeight: 700 },
-          labelBgStyle: { fill: isC2 ? 'rgba(127,29,29,0.8)' : 'rgba(0,0,0,0.6)' },
-          labelBgPadding: [4, 8] as [number, number],
-          labelBgBorderRadius: 4,
-        })
-
-        netX += xSpacing
-      })
-      yOffset += ySpacing
-    }
-
-    // File operations
-    const files = analysis.filesystemChanges || analysis.filesystem_changes || {}
-    const allFiles = [
-      ...(files.created || []).map((f: string) => ({ path: f, operation: 'created' })),
-      ...(files.modified || []).map((f: string) => ({ path: f, operation: 'modified' })),
-      ...(files.deleted || []).map((f: string) => ({ path: f, operation: 'deleted' })),
-    ].slice(0, 5)
-
-    if (allFiles.length > 0) {
-      let fileX = 100
-      allFiles.forEach((file: any) => {
-        const fileId = getNextId()
-        const fileName = file.path.split('/').pop() || file.path.split('\\').pop() || file.path
-        const displayName = fileName.length > 15 ? fileName.substring(0, 15) + '...' : fileName
-
-        nodes.push({
-          id: fileId,
-          type: 'file',
-          position: { x: fileX, y: yOffset },
-          data: {
-            label: displayName,
-            fullPath: file.path,
-            operation: file.operation,
-          },
-          sourcePosition: Position.Bottom,
-          targetPosition: Position.Top,
-        })
-
-        const sourceNode = Object.values(processNodes)[0] || entryId
-        const opColors: Record<string, string> = {
-          created: '#22c55e',
-          modified: '#eab308',
-          deleted: '#ef4444',
-        }
-
-        edges.push({
-          id: `edge-file-${fileId}`,
-          source: sourceNode,
-          target: fileId,
-          style: { stroke: opColors[file.operation] || '#22c55e', strokeWidth: 2 },
-          markerEnd: { type: MarkerType.ArrowClosed, color: opColors[file.operation] || '#22c55e', width: 16, height: 16 },
-          label: file.operation,
-          labelStyle: { fill: '#9ca3af', fontSize: 10, fontWeight: 600 },
-          labelBgStyle: { fill: 'rgba(0,0,0,0.6)' },
-          labelBgPadding: [3, 6] as [number, number],
-          labelBgBorderRadius: 3,
-        })
-
-        fileX += 180
-      })
-      yOffset += ySpacing
-    }
-
-    // Threat map behaviors as IOC nodes
-    const threatMap = analysis.threatMap || analysis.threat_map || {}
-    let iocX = 650
-    let iocY = 80
-
-    Object.entries(threatMap).forEach(([category, behaviors]: [string, any]) => {
-      if (behaviors && behaviors.length > 0) {
-        behaviors.slice(0, 3).forEach((behavior: any) => {
-          const iocId = getNextId()
-          nodes.push({
-            id: iocId,
-            type: 'ioc',
-            position: { x: iocX, y: iocY },
-            data: {
-              type: behavior.technique || category,
-              value: behavior.behavior || behavior.api || '',
-              malicious: behavior.severity === 'high' || behavior.severity === 'critical',
-            },
-            sourcePosition: Position.Left,
-            targetPosition: Position.Right,
-          })
-
-          edges.push({
-            id: `edge-ioc-${iocId}`,
-            source: entryId,
-            target: iocId,
-            style: { stroke: '#f97316', strokeWidth: 2, strokeDasharray: '8,4' },
-            markerEnd: { type: MarkerType.ArrowClosed, color: '#f97316', width: 14, height: 14 },
-          })
-
-          iocY += 90
-        })
+      return {
+        id: node.id,
+        type: 'flowNode',
+        position: {
+          x: isEvenRow ? col * horizontalGap : (3 - col) * horizontalGap,
+          y: row * verticalGap * 1.5
+        },
+        data: {
+          label: node.label,
+          description: node.description,
+          severity: node.severity,
+          nodeType: node.type,
+          step: node.step,
+          ...node.data
+        },
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
       }
     })
 
-    return { initialNodes: nodes, initialEdges: edges }
-  }, [analysis])
+    const reactFlowEdges: Edge[] = flowData.edges.map((edge, index) => {
+      const edgeColor = edge.type === 'c2' ? '#dc2626' :
+                        edge.type === 'threat' ? '#ea580c' :
+                        edge.type === 'redirect' ? '#ca8a04' :
+                        edge.type === 'assessment' ? '#16a34a' : '#2563eb'
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
+      return {
+        id: `e_${index}`,
+        source: edge.source,
+        target: edge.target,
+        label: edge.label,
+        type: 'smoothstep',
+        animated: true,
+        style: { stroke: edgeColor, strokeWidth: 2 },
+        labelStyle: { fill: '#d1d5db', fontSize: 11, fontWeight: 500 },
+        labelBgStyle: { fill: '#1f2937', fillOpacity: 0.9 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor },
+      }
+    })
 
-  const nodeColor = useCallback((node: Node) => {
-    switch (node.type) {
-      case 'entry': return '#6366f1'
-      case 'process': return '#3b82f6'
-      case 'network': return '#a855f7'
-      case 'file': return '#22c55e'
-      case 'url': return '#06b6d4'
-      case 'ioc': return '#f97316'
-      default: return '#6b7280'
-    }
-  }, [])
+    return { initialNodes: reactFlowNodes, initialEdges: reactFlowEdges }
+  }, [flowData])
 
-  if (!mounted) return null
+  const [nodes, , onNodesChange] = useNodesState(initialNodes)
+  const [edges, , onEdgesChange] = useEdgesState(initialEdges)
 
-  if (initialNodes.length <= 1) {
+  if (!flowData || flowData.nodes.length === 0) {
     return (
-      <div className="card bg-gradient-to-br from-dark-600 to-dark-700">
+      <div className="card">
         <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-          <NetworkIcon />
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-400">
-            Attack Flow Diagram
-          </span>
+          <span>🔄</span> Attack Flow Diagram
         </h3>
-        <div className="text-gray-400 text-center py-12 bg-dark-600/50 rounded-xl border border-dark-300">
-          <div className="text-4xl mb-4">🔍</div>
-          No behavioral data available to visualize.
-          <br />
-          <span className="text-sm text-gray-500">
-            Run a dynamic analysis (sandbox) to see the attack flow.
-          </span>
+        <div className="text-gray-400 text-center py-8">
+          No flow data available
         </div>
       </div>
     )
   }
 
   return (
-    <div className="card bg-gradient-to-br from-dark-600 to-dark-700 p-0 overflow-hidden">
+    <div className="card">
       <StyleInjector />
 
-      <div className="p-4 border-b border-dark-300">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold flex items-center gap-2">
-          <div className="text-indigo-400"><NetworkIcon /></div>
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-400">
-            Attack Flow Diagram
-          </span>
-          <span className="text-xs text-gray-500 font-normal ml-2 bg-dark-500 px-2 py-1 rounded">
-            Interactive - drag & zoom
-          </span>
+          <span>🔄</span> Attack Flow Diagram
         </h3>
-
-        {/* Legend */}
-        <div className="flex flex-wrap gap-3 mt-3 text-xs">
-          {[
-            { color: 'bg-indigo-500', label: 'Entry Point' },
-            { color: 'bg-blue-500', label: 'Process' },
-            { color: 'bg-purple-500', label: 'Network' },
-            { color: 'bg-red-500', label: 'C2/Malicious' },
-            { color: 'bg-green-500', label: 'File' },
-            { color: 'bg-cyan-500', label: 'URL' },
-            { color: 'bg-orange-500', label: 'IOC' },
-          ].map(item => (
-            <div key={item.label} className="flex items-center gap-1.5 bg-dark-500/50 px-2 py-1 rounded">
-              <div className={`w-2.5 h-2.5 rounded-full ${item.color} shadow-lg`}></div>
-              <span className="text-gray-400">{item.label}</span>
-            </div>
-          ))}
+        <div className="flex gap-2 text-xs">
+          {flowData.summary?.totalSteps && (
+            <span className="badge badge-info">{flowData.summary.totalSteps} Steps</span>
+          )}
+          {flowData.summary?.redirects > 0 && (
+            <span className="badge badge-warning">{flowData.summary.redirects} Redirects</span>
+          )}
+          {flowData.summary?.networkConnections > 0 && (
+            <span className="badge badge-danger">{flowData.summary.networkConnections} C2</span>
+          )}
         </div>
       </div>
 
-      <div className="h-[550px] bg-gradient-to-br from-slate-900 via-dark-600 to-slate-900">
+      {/* Timeline */}
+      {flowData.timeline?.length > 0 && (
+        <div className="mb-4 p-3 bg-dark-500 rounded-lg overflow-x-auto">
+          <div className="text-xs text-gray-400 mb-2">Sequence:</div>
+          <div className="flex items-center gap-1 min-w-max">
+            {flowData.timeline.map((item, i) => (
+              <div key={i} className="flex items-center">
+                <div className="flex items-center gap-1 px-2 py-1 bg-dark-400 rounded text-xs">
+                  <span className="w-5 h-5 rounded-full bg-primary-600 text-white flex items-center justify-center text-[10px] font-bold">
+                    {item.step}
+                  </span>
+                  <span className="text-gray-300 whitespace-nowrap">{item.label}</span>
+                </div>
+                {i < flowData.timeline.length - 1 && (
+                  <span className="text-primary-500 mx-1">→</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Flow Diagram */}
+      <div style={{ height: '450px', background: '#0c1222', borderRadius: '8px', border: '1px solid #1e293b' }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -708,41 +436,29 @@ export default function AttackFlowDiagram({ analysis }: AttackFlowProps) {
           onEdgesChange={onEdgesChange}
           nodeTypes={nodeTypes}
           fitView
-          fitViewOptions={{ padding: 0.2 }}
-          minZoom={0.2}
+          fitViewOptions={{ padding: 0.3 }}
+          minZoom={0.3}
           maxZoom={2}
-          defaultViewport={{ x: 0, y: 0, zoom: 0.7 }}
+          attributionPosition="bottom-left"
         >
-          {/* Gradient definitions for edges */}
-          <svg>
-            <defs>
-              <linearGradient id="gradient-blue" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="#6366f1" />
-                <stop offset="100%" stopColor="#8b5cf6" />
-              </linearGradient>
-              <linearGradient id="gradient-cyan" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="#06b6d4" />
-                <stop offset="100%" stopColor="#22d3ee" />
-              </linearGradient>
-              <linearGradient id="gradient-red" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="#ef4444" />
-                <stop offset="100%" stopColor="#f87171" />
-              </linearGradient>
-            </defs>
-          </svg>
-          <Background color="#1e293b" gap={24} variant={BackgroundVariant.Dots} />
-          <Controls
-            className="bg-dark-500/90 border border-dark-300 rounded-lg backdrop-blur-sm"
-            showInteractive={false}
-          />
+          <Background color="#1e293b" gap={24} />
+          <Controls style={{ background: '#1f2937', borderRadius: '8px', border: '1px solid #374151' }} />
           <MiniMap
-            nodeColor={nodeColor}
-            maskColor="rgba(0,0,0,0.85)"
-            className="bg-dark-500/90 border border-dark-300 rounded-lg backdrop-blur-sm"
-            pannable
-            zoomable
+            nodeColor={(node) => severityColors[node.data?.severity]?.border || '#2563eb'}
+            maskColor="#0c122290"
+            style={{ background: '#1f2937', borderRadius: '8px', border: '1px solid #374151' }}
           />
         </ReactFlow>
+      </div>
+
+      {/* Legend */}
+      <div className="mt-4 flex flex-wrap gap-4 text-xs">
+        {Object.entries(severityColors).slice(0, 4).map(([key, colors]) => (
+          <div key={key} className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded" style={{ background: colors.border }}></div>
+            <span className="text-gray-400 capitalize">{key}</span>
+          </div>
+        ))}
       </div>
     </div>
   )

@@ -3,6 +3,7 @@ import { Search, Hash, Shield, AlertTriangle, FileText, Tag } from 'lucide-react
 import { lookupHash } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
+import AIValidation from '../components/AIValidation'
 
 export default function HashLookup() {
   const [hash, setHash] = useState('')
@@ -32,7 +33,13 @@ export default function HashLookup() {
 
   const summary = results?.summary || {}
   const sources = results?.sources || {}
-  const riskScore = summary.riskScore || 0
+  const aiValidation = results?.aiValidation || {}
+
+  // Use AI-validated score if available
+  const hasAiValidation = results?.aiValidation && typeof aiValidation.validatedScore === 'number'
+  const riskScore = hasAiValidation ? aiValidation.validatedScore : (summary.riskScore || 0)
+  const isMalicious = hasAiValidation ? aiValidation.validatedMalicious : summary.isMalicious
+  const recommendation = hasAiValidation ? aiValidation.recommendation : null
 
   return (
     <div className="space-y-6">
@@ -99,34 +106,42 @@ export default function HashLookup() {
                 {results.hash}
               </code>
               <div className="flex flex-wrap gap-2 mb-4">
-                {summary.isMalicious ? (
+                {isMalicious ? (
                   <span className="badge badge-danger">MALICIOUS</span>
                 ) : (
                   <span className="badge badge-success">CLEAN</span>
                 )}
                 {sources.virustotal?.malicious > 0 && (
-                  <span className="badge badge-danger">
-                    {sources.virustotal.malicious} Detections
+                  <span className="badge badge-warning">
+                    {sources.virustotal.malicious} Detection{sources.virustotal.malicious > 1 ? 's' : ''}
                   </span>
+                )}
+                {hasAiValidation && aiValidation.confidence && (
+                  <span className="badge badge-info">AI Confidence: {aiValidation.confidence}%</span>
                 )}
               </div>
 
-              {/* AI Verdict */}
-              {summary.verdict && (
+              {/* AI Recommendation (primary) or Original Verdict (fallback) */}
+              {(recommendation || summary.verdict) && (
                 <div className={`p-4 rounded-lg ${
-                  summary.isMalicious
+                  isMalicious
                     ? 'bg-red-500/10 border border-red-500/30'
                     : 'bg-green-500/10 border border-green-500/30'
                 }`}>
                   <p className={`text-sm leading-relaxed ${
-                    summary.isMalicious ? 'text-red-300' : 'text-green-300'
+                    isMalicious ? 'text-red-300' : 'text-green-300'
                   }`}>
-                    {summary.verdict}
+                    {recommendation || summary.verdict}
                   </p>
                 </div>
               )}
             </div>
           </div>
+
+          {/* AI Risk Validation */}
+          {results.aiValidation && (
+            <AIValidation validation={results.aiValidation} />
+          )}
 
           {/* Security Vendor Analysis */}
           {sources.virustotal && (

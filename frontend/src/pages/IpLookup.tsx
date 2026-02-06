@@ -3,6 +3,7 @@ import { Search, Globe, MapPin, Server, Shield, AlertTriangle, Wifi, Eye, Bot } 
 import { lookupIp } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
+import AIValidation from '../components/AIValidation'
 import { defangIp, defangDomain } from '../utils/defang'
 
 export default function IpLookup() {
@@ -35,7 +36,13 @@ export default function IpLookup() {
   const basic = results?.basic || {}
   const sources = threat.sources || {}
   const summary = threat.summary || {}
-  const riskScore = summary.riskScore || 0
+  const aiValidation = threat.aiValidation || {}
+
+  // Use AI-validated score if available
+  const hasAiValidation = threat.aiValidation && typeof aiValidation.validatedScore === 'number'
+  const riskScore = hasAiValidation ? aiValidation.validatedScore : (summary.riskScore || 0)
+  const isMalicious = hasAiValidation ? aiValidation.validatedMalicious : summary.isMalicious
+  const recommendation = hasAiValidation ? aiValidation.recommendation : null
 
   return (
     <div className="space-y-6">
@@ -103,7 +110,7 @@ export default function IpLookup() {
 
               {/* Status Badges */}
               <div className="flex flex-wrap gap-2 mb-4">
-                {summary.isMalicious ? (
+                {isMalicious ? (
                   <span className="badge badge-danger">MALICIOUS</span>
                 ) : (
                   <span className="badge badge-success">CLEAN</span>
@@ -112,23 +119,26 @@ export default function IpLookup() {
                   <span className="badge badge-warning">{sources.abuseipdb.totalReports} Abuse Reports</span>
                 )}
                 {sources.virustotal?.malicious > 0 && (
-                  <span className="badge badge-danger">
+                  <span className="badge badge-warning">
                     {sources.virustotal.malicious}/{sources.virustotal.malicious + sources.virustotal.harmless + sources.virustotal.suspicious + (sources.virustotal.undetected || 0)} Detections
                   </span>
                 )}
+                {hasAiValidation && aiValidation.confidence && (
+                  <span className="badge badge-info">AI Confidence: {aiValidation.confidence}%</span>
+                )}
               </div>
 
-              {/* AI Verdict */}
-              {summary.verdict && (
+              {/* AI Recommendation (primary) or Original Verdict (fallback) */}
+              {(recommendation || summary.verdict) && (
                 <div className={`p-4 rounded-lg mb-4 ${
-                  summary.isMalicious
+                  isMalicious
                     ? 'bg-red-500/10 border border-red-500/30'
                     : 'bg-green-500/10 border border-green-500/30'
                 }`}>
                   <p className={`text-sm leading-relaxed ${
-                    summary.isMalicious ? 'text-red-300' : 'text-green-300'
+                    isMalicious ? 'text-red-300' : 'text-green-300'
                   }`}>
-                    {summary.verdict}
+                    {recommendation || summary.verdict}
                   </p>
                 </div>
               )}
@@ -158,6 +168,11 @@ export default function IpLookup() {
               </div>
             </div>
           </div>
+
+          {/* AI Risk Validation */}
+          {threat.aiValidation && (
+            <AIValidation validation={threat.aiValidation} />
+          )}
 
           {/* Location & Network */}
           <div className="grid md:grid-cols-2 gap-6">
