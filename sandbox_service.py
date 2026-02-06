@@ -1255,8 +1255,8 @@ class BubblewrapBackend:
                 cwd=self.session_dir,
             )
 
-            result['stdout'] = proc.stdout.decode('utf-8', errors='replace')[:50000]
-            result['stderr'] = proc.stderr.decode('utf-8', errors='replace')[:50000]
+            result['stdout'] = proc.stdout.decode('utf-8', errors='replace')[:200000]
+            result['stderr'] = proc.stderr.decode('utf-8', errors='replace')[:200000]
             result['exit_code'] = proc.returncode
             result['success'] = proc.returncode == 0
 
@@ -1323,8 +1323,8 @@ class BubblewrapBackend:
                 cwd=self.session_dir,
             )
 
-            result['stdout'] = proc.stdout.decode('utf-8', errors='replace')[:50000]
-            result['stderr'] = proc.stderr.decode('utf-8', errors='replace')[:50000]
+            result['stdout'] = proc.stdout.decode('utf-8', errors='replace')[:200000]
+            result['stderr'] = proc.stderr.decode('utf-8', errors='replace')[:200000]
             result['exit_code'] = proc.returncode
             result['success'] = proc.returncode == 0
 
@@ -1383,8 +1383,32 @@ class BubblewrapBackend:
         wine_command = [wine_binary, f'/sandbox/{exe_name}']
 
         # Create writable Wine prefix in work directory
+        # Copy from template prefix if available to avoid Wine initialization delay
         wine_prefix = os.path.join(self.work_dir, '.wine')
-        os.makedirs(wine_prefix, exist_ok=True)
+
+        # Look for Wine prefix template in order of preference
+        template_prefix = None
+        for template_path in [
+            '/opt/shieldtier/wine_prefix',  # Production template
+            os.path.expanduser('~/.wine'),   # User's Wine prefix
+            '/home/shieldtier/.wine',        # Service user's Wine prefix
+        ]:
+            if os.path.exists(template_path) and os.path.isdir(template_path):
+                template_prefix = template_path
+                break
+
+        if template_prefix and os.path.exists(os.path.join(template_prefix, 'system.reg')):
+            # Copy essential Wine prefix files for faster startup
+            # IMPORTANT: use symlinks=True to preserve symlinks and avoid copying
+            # entire mounted drives (like CD-ROM or ISO mounts)
+            try:
+                # Copy the wine prefix (this is faster than Wine initialization)
+                shutil.copytree(template_prefix, wine_prefix, dirs_exist_ok=True, symlinks=True)
+            except Exception as e:
+                # Fallback to empty prefix if copy fails
+                os.makedirs(wine_prefix, exist_ok=True)
+        else:
+            os.makedirs(wine_prefix, exist_ok=True)
 
         # Build bwrap args - order matters!
         args = [
@@ -1476,7 +1500,7 @@ class BubblewrapBackend:
         # +loaddll: DLL loading, +file: file access, +reg: registry access
         # +relay: API call tracing (for detailed API monitoring)
         # +seh: exception handling, +module: module events
-        wine_debug = '+loaddll,+file,+reg,+relay,+module,+seh,-other'
+        wine_debug = '+loaddll'  # Minimal debug to capture DLL loads without flooding output
         args.extend([
             '--cap-drop', 'ALL',
             '--hostname', 'sandbox',
@@ -1530,8 +1554,8 @@ class BubblewrapBackend:
                 cwd=self.session_dir,
             )
 
-            result['stdout'] = proc.stdout.decode('utf-8', errors='replace')[:50000]
-            result['stderr'] = proc.stderr.decode('utf-8', errors='replace')[:50000]
+            result['stdout'] = proc.stdout.decode('utf-8', errors='replace')[:200000]
+            result['stderr'] = proc.stderr.decode('utf-8', errors='replace')[:200000]
             result['exit_code'] = proc.returncode
             # Wine returns various exit codes, consider it successful if it ran
             result['success'] = proc.returncode != -9
@@ -1657,8 +1681,8 @@ class DockerBackend:
                 timeout=self.timeout + 10,
             )
 
-            result['stdout'] = proc.stdout.decode('utf-8', errors='replace')[:50000]
-            result['stderr'] = proc.stderr.decode('utf-8', errors='replace')[:50000]
+            result['stdout'] = proc.stdout.decode('utf-8', errors='replace')[:200000]
+            result['stderr'] = proc.stderr.decode('utf-8', errors='replace')[:200000]
             result['exit_code'] = proc.returncode
             result['success'] = proc.returncode == 0
 
@@ -1692,7 +1716,7 @@ class DockerBackend:
         # Docker command with Wine image
         # Enable Wine debug channels to capture behavioral data
         # +loaddll: DLL loading, +file: file access, +reg: registry, +relay: API calls
-        wine_debug = '+loaddll,+file,+reg,+relay,+module,+seh,-other'
+        wine_debug = '+loaddll'  # Minimal debug to capture DLL loads without flooding output
         docker_args = [
             'docker', 'run',
             '--rm',
@@ -1717,8 +1741,8 @@ class DockerBackend:
                 timeout=self.timeout + 10,
             )
 
-            result['stdout'] = proc.stdout.decode('utf-8', errors='replace')[:50000]
-            result['stderr'] = proc.stderr.decode('utf-8', errors='replace')[:50000]
+            result['stdout'] = proc.stdout.decode('utf-8', errors='replace')[:200000]
+            result['stderr'] = proc.stderr.decode('utf-8', errors='replace')[:200000]
             result['exit_code'] = proc.returncode
             # Wine returns various exit codes, consider it successful if it ran
             result['success'] = proc.returncode != -9

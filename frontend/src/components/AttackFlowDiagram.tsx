@@ -43,24 +43,28 @@ interface FlowNode {
   id: string
   type: string
   label: string
-  description: string
-  data: any
-  step: number
-  severity: string
+  description?: string
+  data?: any
+  step?: number
+  severity?: string
+  isCenter?: boolean  // For radial layout - marks the center node
 }
 
 interface FlowEdge {
   source: string
   target: string
-  label: string
-  type: string
+  label?: string
+  type?: string
+  style?: string  // 'dotted' for dotted lines
 }
 
 interface AttackFlow {
   nodes: FlowNode[]
   edges: FlowEdge[]
-  summary: any
-  timeline: any[]
+  summary?: any
+  timeline?: any[]
+  layoutType?: string  // 'radial' for VirusTotal-style graph
+  centerNode?: string  // ID of center node for radial layout
 }
 
 interface AttackFlowDiagramProps {
@@ -108,6 +112,118 @@ function FlowNodeComponent({ data }: { data: any }) {
   const icon = nodeIcons[data.nodeType] || '📌'
   const isCritical = data.severity === 'critical' || data.severity === 'high'
 
+  // Radial layout - center node (file) is larger, others are circular badges
+  if (data.isCenter) {
+    // Center node - large prominent display
+    return (
+      <div
+        className="attack-flow-node"
+        style={{
+          background: `radial-gradient(circle, ${colors.bg} 0%, #0f172a 100%)`,
+          border: `3px solid ${colors.border}`,
+          borderRadius: '50%',
+          width: '120px',
+          height: '120px',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          boxShadow: `0 0 30px ${colors.glow}, 0 0 60px ${colors.glow}55`,
+          animation: 'pulse 2s ease-in-out infinite',
+        }}
+      >
+        <span style={{ fontSize: '28px', marginBottom: '4px' }}>{icon}</span>
+        <span style={{
+          color: colors.text,
+          fontWeight: 700,
+          fontSize: '11px',
+          textAlign: 'center',
+          maxWidth: '100px',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}>
+          {data.label}
+        </span>
+        <span style={{ color: '#6b7280', fontSize: '9px', marginTop: '2px' }}>
+          {data.description}
+        </span>
+      </div>
+    )
+  }
+
+  // Radial layout - peripheral nodes (IPs, DLLs, APIs) as labeled nodes
+  if (data.nodeType === 'ip' || data.nodeType === 'dll' || data.nodeType === 'api' || data.nodeType === 'domain') {
+    return (
+      <div
+        className="attack-flow-node"
+        style={{
+          background: `linear-gradient(135deg, ${colors.bg} 0%, #0f172a 100%)`,
+          border: `2px solid ${colors.border}`,
+          borderRadius: '12px',
+          padding: '12px 16px',
+          minWidth: '180px',
+          maxWidth: '280px',
+          boxShadow: `0 4px 15px ${colors.glow}`,
+          animation: isCritical ? 'pulse 2s ease-in-out infinite' : undefined,
+        }}
+      >
+        {/* Header with icon and type */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+          <span style={{ fontSize: '20px' }}>{icon}</span>
+          <span style={{
+            color: colors.text,
+            fontWeight: 700,
+            fontSize: '13px',
+            textTransform: 'uppercase',
+            letterSpacing: '0.5px',
+          }}>
+            {data.nodeType === 'ip' ? 'C2 Server' :
+             data.nodeType === 'dll' ? 'DLL' :
+             data.nodeType === 'api' ? 'API Call' : 'Domain'}
+          </span>
+        </div>
+
+        {/* Main value - IP:port, DLL name, API name */}
+        <div style={{
+          color: '#fff',
+          fontSize: '12px',
+          fontFamily: 'monospace',
+          fontWeight: 600,
+          marginBottom: '4px',
+          wordBreak: 'break-all',
+        }}>
+          {data.nodeType === 'ip' ? `${data.ip || ''}:${data.port || ''}` :
+           data.nodeType === 'api' ? data.api || data.label :
+           data.dll || data.label}
+        </div>
+
+        {/* Secondary info - path for DLLs, source DLL for APIs */}
+        {data.nodeType === 'dll' && data.path && (
+          <div style={{
+            color: '#6ee7b7',
+            fontSize: '10px',
+            fontFamily: 'monospace',
+            wordBreak: 'break-all',
+            lineHeight: 1.3,
+          }}>
+            {data.path}
+          </div>
+        )}
+        {data.nodeType === 'api' && data.dll && (
+          <div style={{
+            color: '#fbbf24',
+            fontSize: '10px',
+            fontFamily: 'monospace',
+          }}>
+            from {data.dll}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Original rectangular style for sequential flows
   return (
     <div
       className="attack-flow-node"
@@ -315,28 +431,51 @@ export default function AttackFlowDiagram({ analysis, attackFlow }: AttackFlowDi
       return { initialNodes: [], initialEdges: [] }
     }
 
-    const horizontalGap = 300
-    const verticalGap = 100
+    const isRadialLayout = flowData.layoutType === 'radial'
+    const centerX = 450
+    const centerY = 280
+    const radius = 250
 
-    // Position nodes in a flowing horizontal layout
+    // Position nodes
     const reactFlowNodes: Node[] = flowData.nodes.map((node, index) => {
-      const row = Math.floor(index / 4)
-      const col = index % 4
-      const isEvenRow = row % 2 === 0
+      let x: number, y: number
+
+      if (isRadialLayout) {
+        // Radial layout - center node in middle, others around it
+        if (node.isCenter) {
+          x = centerX
+          y = centerY
+        } else {
+          // Position non-center nodes in a circle
+          const nonCenterNodes = flowData.nodes.filter(n => !n.isCenter)
+          const nodeIndex = nonCenterNodes.findIndex(n => n.id === node.id)
+          const totalNonCenter = nonCenterNodes.length
+          const angle = (nodeIndex / totalNonCenter) * 2 * Math.PI - Math.PI / 2
+          x = centerX + radius * Math.cos(angle)
+          y = centerY + radius * Math.sin(angle)
+        }
+      } else {
+        // Original horizontal layout
+        const horizontalGap = 300
+        const verticalGap = 100
+        const row = Math.floor(index / 4)
+        const col = index % 4
+        const isEvenRow = row % 2 === 0
+        x = isEvenRow ? col * horizontalGap : (3 - col) * horizontalGap
+        y = row * verticalGap * 1.5
+      }
 
       return {
         id: node.id,
         type: 'flowNode',
-        position: {
-          x: isEvenRow ? col * horizontalGap : (3 - col) * horizontalGap,
-          y: row * verticalGap * 1.5
-        },
+        position: { x, y },
         data: {
           label: node.label,
           description: node.description,
           severity: node.severity,
           nodeType: node.type,
           step: node.step,
+          isCenter: node.isCenter,
           ...node.data
         },
         sourcePosition: Position.Right,
@@ -345,26 +484,32 @@ export default function AttackFlowDiagram({ analysis, attackFlow }: AttackFlowDi
     })
 
     const reactFlowEdges: Edge[] = flowData.edges.map((edge, index) => {
-      const edgeColor = edge.type === 'c2' ? '#dc2626' :
-                        edge.type === 'threat' ? '#ea580c' :
-                        edge.type === 'redirect' ? '#ca8a04' :
-                        edge.type === 'assessment' ? '#16a34a' : '#2563eb'
+      // Color based on relationship type
+      const edgeColor = edge.type === 'network' || edge.type === 'c2' ? '#dc2626' :
+                        edge.type === 'api' ? '#f59e0b' :
+                        edge.type === 'library' ? '#3b82f6' :
+                        edge.type === 'dns' ? '#8b5cf6' : '#6b7280'
 
       return {
         id: `e_${index}`,
         source: edge.source,
         target: edge.target,
         label: edge.label,
-        type: 'smoothstep',
-        animated: true,
-        style: { stroke: edgeColor, strokeWidth: 2 },
-        labelStyle: { fill: '#d1d5db', fontSize: 11, fontWeight: 500 },
+        type: isRadialLayout ? 'straight' : 'smoothstep',  // Straight lines for radial layout
+        animated: edge.type === 'network' || edge.type === 'c2',
+        style: { stroke: edgeColor, strokeWidth: 2, strokeDasharray: '5 5' },  // Always dotted
+        labelStyle: { fill: '#d1d5db', fontSize: 10, fontWeight: 500 },
         labelBgStyle: { fill: '#1f2937', fillOpacity: 0.9 },
         markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor },
       }
     })
 
     return { initialNodes: reactFlowNodes, initialEdges: reactFlowEdges }
+  }, [flowData])
+
+  // Create a key that changes when flowData changes to force re-render
+  const flowKey = useMemo(() => {
+    return flowData?.nodes?.map(n => n.id).join('-') || 'empty'
   }, [flowData])
 
   const [nodes, , onNodesChange] = useNodesState(initialNodes)
@@ -406,7 +551,7 @@ export default function AttackFlowDiagram({ analysis, attackFlow }: AttackFlowDi
       </div>
 
       {/* Timeline */}
-      {flowData.timeline?.length > 0 && (
+      {flowData.timeline && flowData.timeline.length > 0 && (
         <div className="mb-4 p-3 bg-dark-500 rounded-lg overflow-x-auto">
           <div className="text-xs text-gray-400 mb-2">Sequence:</div>
           <div className="flex items-center gap-1 min-w-max">
@@ -418,7 +563,7 @@ export default function AttackFlowDiagram({ analysis, attackFlow }: AttackFlowDi
                   </span>
                   <span className="text-gray-300 whitespace-nowrap">{item.label}</span>
                 </div>
-                {i < flowData.timeline.length - 1 && (
+                {i < (flowData.timeline?.length ?? 0) - 1 && (
                   <span className="text-primary-500 mx-1">→</span>
                 )}
               </div>
@@ -428,10 +573,11 @@ export default function AttackFlowDiagram({ analysis, attackFlow }: AttackFlowDi
       )}
 
       {/* Flow Diagram */}
-      <div style={{ height: '450px', background: '#0c1222', borderRadius: '8px', border: '1px solid #1e293b' }}>
+      <div style={{ height: '550px', background: '#0c1222', borderRadius: '8px', border: '1px solid #1e293b' }}>
         <ReactFlow
-          nodes={nodes}
-          edges={edges}
+          key={flowKey}
+          nodes={initialNodes}
+          edges={initialEdges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           nodeTypes={nodeTypes}

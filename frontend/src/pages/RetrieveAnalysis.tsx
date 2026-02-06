@@ -115,7 +115,7 @@ function RetrieveAnalysis() {
               className="input-field w-full"
             />
             <p className="text-xs text-gray-500 mt-1">
-              Analysis results are stored for 15 days and then automatically deleted.
+              Analysis results are stored for 24 hours and then automatically deleted.
             </p>
           </div>
 

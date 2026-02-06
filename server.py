@@ -72,7 +72,7 @@ MAX_FILE_SIZE = 15 * 1024 * 1024  # 15MB
 DATABASE_FILE = os.path.join(os.path.dirname(__file__), 'analysis_results.db')
 MASTER_KEY_FILE = os.path.join(os.path.dirname(__file__), '.msb_master_key')
 KEY_SALT_FILE = os.path.join(os.path.dirname(__file__), '.msb_key_salt')
-EXPIRATION_DAYS = 30
+EXPIRATION_DAYS = 1  # 24 hours data retention
 MIN_SECRET_KEY_LENGTH = 8
 PBKDF2_ITERATIONS = 100000
 

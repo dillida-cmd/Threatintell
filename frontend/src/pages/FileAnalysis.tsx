@@ -415,7 +415,7 @@ export default function FileAnalysis() {
               className="input w-full"
             />
             <p className="text-gray-500 text-xs mt-2">
-              Results will be automatically deleted after 15 days
+              Results will be automatically deleted after 24 hours
             </p>
           </div>
         )}
@@ -511,7 +511,7 @@ function ResultHeader({ entryRef, secretKey, riskScore }: { entryRef: string; se
           <div>
             <p className="text-gray-400 text-xs">Entry Reference</p>
             <p className="text-white font-mono text-lg font-bold">{entryRef}</p>
-            <p className="text-gray-500 text-xs mt-1">Results will be deleted after 15 days</p>
+            <p className="text-gray-500 text-xs mt-1">Results will be deleted after 24 hours</p>
           </div>
         </div>
         <button
