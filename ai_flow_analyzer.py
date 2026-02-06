@@ -280,6 +280,7 @@ class AttackFlowAnalyzer:
         registry_modified = registry.get('keysModified', registry.get('keys_modified', []))
 
         step = 1
+        memory_imports = []  # Initialize here to avoid scope issues
 
         # ===== STEP 1: File Received =====
         file_node = self._generate_node_id()
