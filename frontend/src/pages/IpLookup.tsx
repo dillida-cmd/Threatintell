@@ -124,7 +124,7 @@ export default function IpLookup() {
                   </span>
                 )}
                 {hasAiValidation && aiValidation.confidence && (
-                  <span className="badge badge-info">AI Confidence: {aiValidation.confidence}%</span>
+                  <span className="badge badge-info">ShieldTier™ Confidence: {aiValidation.confidence}%</span>
                 )}
               </div>
 

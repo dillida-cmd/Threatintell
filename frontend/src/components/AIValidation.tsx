@@ -76,7 +76,7 @@ export default function AIValidation({ validation, compact = false }: AIValidati
             <Brain className="h-5 w-5 text-primary-400" />
           </div>
           <div>
-            <h3 className="text-lg font-semibold text-white">AI Risk Validation</h3>
+            <h3 className="text-lg font-semibold text-white">ShieldTier™ Risk Validation</h3>
             <p className="text-xs text-gray-400">Consensus-based threat analysis</p>
           </div>
         </div>
@@ -102,7 +102,7 @@ export default function AIValidation({ validation, compact = false }: AIValidati
                 </span>
               )}
             </div>
-            <div className="text-xs text-gray-500">AI Score</div>
+            <div className="text-xs text-gray-500">ShieldTier™ Score</div>
           </div>
 
           {expanded ? (
