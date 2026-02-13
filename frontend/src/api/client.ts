@@ -40,10 +40,13 @@ export const lookupHash = async (hash: string) => {
 }
 
 // File Analysis
-export const analyzeFile = async (file: File, secretKey: string) => {
+export const analyzeFile = async (file: File, secretKey: string, pdfPassword?: string) => {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('secretKey', secretKey)
+  if (pdfPassword) {
+    formData.append('pdfPassword', pdfPassword)
+  }
 
   // Determine endpoint based on file type
   const ext = file.name.toLowerCase().split('.').pop() || ''

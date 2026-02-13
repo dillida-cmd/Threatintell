@@ -2044,12 +2044,67 @@ def calculate_email_risk_score(indicators, auth_results, attachments, sender_dom
     return min(score, 100)
 
 
-def analyze_pdf(file_data):
+def analyze_pdf(file_data, pdf_password=''):
     """Analyze a PDF file for security indicators"""
     try:
         from pypdf import PdfReader
 
         reader = PdfReader(io.BytesIO(file_data))
+
+        # Handle encrypted PDFs
+        is_encrypted = reader.is_encrypted
+        decrypted = False
+        if is_encrypted:
+            # Try user-provided password first, then empty password
+            passwords_to_try = [pdf_password, ''] if pdf_password else ['']
+            for pw in passwords_to_try:
+                try:
+                    result = reader.decrypt(pw)
+                    if result > 0:  # 0 = failed, 1 = user pw, 2 = owner pw
+                        decrypted = True
+                        break
+                except Exception:
+                    pass
+
+            if not decrypted:
+                # Password required or wrong password
+                file_hash = hashlib.sha256(file_data).hexdigest()
+                return {
+                    'success': True,
+                    'type': 'pdf',
+                    'isEncrypted': True,
+                    'needsPassword': True,
+                    'wrongPassword': bool(pdf_password),
+                    'metadata': {},
+                    'pageCount': 0,
+                    'javascript': [],
+                    'hasJavaScript': False,
+                    'embeddedFiles': [],
+                    'hasEmbeddedFiles': False,
+                    'urls': [],
+                    'enrichedUrls': [],
+                    'urlCount': 0,
+                    'forms': [],
+                    'hasForms': False,
+                    'externalReferences': [],
+                    'hasExternalRefs': False,
+                    'httpRequests': [],
+                    'downloadUrls': [],
+                    'processTriggers': [],
+                    'qrCodes': [],
+                    'qrCodeCount': 0,
+                    'pageScreenshots': [],
+                    'riskScore': 30,
+                    'riskLevel': 'low',
+                    'suspiciousIndicators': [{
+                        'type': 'encryption',
+                        'severity': 'info',
+                        'description': 'PDF is password-protected. Enter the PDF password to unlock and analyze.'
+                    }],
+                    'iocInvestigation': None,
+                    'fileSize': len(file_data),
+                    'sha256': file_hash
+                }
 
         # Extract metadata
         metadata = {}
@@ -3917,7 +3972,7 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                 body = self.rfile.read(content_length)
 
                 # Parse multipart data
-                file_data, filename, secret_key = self.parse_multipart_with_secret(body, boundary)
+                file_data, filename, secret_key, extra_fields = self.parse_multipart_with_secret(body, boundary)
 
                 if not file_data:
                     self.send_json({'error': 'No file found in request'}, 400)
@@ -3949,7 +4004,8 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                 if not file_data.startswith(b'%PDF'):
                     self.send_json({'error': 'Invalid PDF file.'}, 400)
                     return
-                result = analyze_pdf(file_data)
+                pdf_password = extra_fields.get('pdfPassword', '')
+                result = analyze_pdf(file_data, pdf_password=pdf_password)
 
             elif analysis_type == 'office':
                 # Check magic bytes for Office documents
@@ -4014,13 +4070,14 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             self.send_json({'error': f'Analysis failed: {str(e)}'}, 500)
 
     def parse_multipart_with_secret(self, body, boundary):
-        """Parse multipart form data and extract file and secret key"""
+        """Parse multipart form data and extract file, secret key, and extra fields"""
         boundary_bytes = boundary.encode()
         parts = body.split(b'--' + boundary_bytes)
 
         file_data = None
         filename = 'uploaded_file'
         secret_key = None
+        extra_fields = {}
 
         for part in parts:
             if b'Content-Disposition' not in part:
@@ -4045,21 +4102,28 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
 
                 filename = filename_match.group(1) if filename_match else 'uploaded_file'
 
-                # Remove trailing boundary markers
-                content = content.rstrip(b'\r\n')
-                if content.endswith(b'--'):
-                    content = content[:-2].rstrip(b'\r\n')
+                # Remove exactly the trailing CRLF from multipart boundary (not all \r\n)
+                if content.endswith(b'\r\n'):
+                    content = content[:-2]
+                elif content.endswith(b'\n'):
+                    content = content[:-1]
 
                 file_data = content
 
             # Check for secretKey field
             elif 'name="secretKey"' in headers_str or "name='secretKey'" in headers_str:
+                # Text fields are safe to strip
                 content = content.rstrip(b'\r\n')
-                if content.endswith(b'--'):
-                    content = content[:-2].rstrip(b'\r\n')
                 secret_key = content.decode('utf-8', errors='ignore').strip()
 
-        return file_data, filename, secret_key
+            # Check for other named fields (e.g. pdfPassword)
+            else:
+                name_match = re.search(r'name="([^"]+)"', headers_str)
+                if name_match:
+                    content = content.rstrip(b'\r\n')
+                    extra_fields[name_match.group(1)] = content.decode('utf-8', errors='ignore').strip()
+
+        return file_data, filename, secret_key, extra_fields
 
     def get_client_ip(self):
         forwarded = self.headers.get('X-Forwarded-For')

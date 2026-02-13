@@ -1,7 +1,7 @@
 import { useState, useRef, lazy, Suspense } from 'react'
 import {
   Upload, FileSearch, Shield, AlertTriangle, Mail, FileText, Table,
-  QrCode, Terminal, Camera, Globe, Link, Code, Package, Download, Key, X, ZoomIn
+  QrCode, Terminal, Camera, Globe, Link, Code, Package, Download, Key, X, ZoomIn, Lock, Unlock
 } from 'lucide-react'
 import { analyzeFile } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
@@ -270,6 +270,9 @@ export default function FileAnalysis() {
   const [error, setError] = useState<string | null>(null)
   const [results, setResults] = useState<any>(null)
   const [dragOver, setDragOver] = useState(false)
+  const [pdfPassword, setPdfPassword] = useState('')
+  const [pdfNeedsPassword, setPdfNeedsPassword] = useState(false)
+  const [pdfWrongPassword, setPdfWrongPassword] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileSelect = (selectedFile: File) => {
@@ -289,14 +292,27 @@ export default function FileAnalysis() {
     if (droppedFile) handleFileSelect(droppedFile)
   }
 
-  const handleAnalyze = async () => {
+  const handleAnalyze = async (overridePdfPassword?: string) => {
     if (!file || !secretKey.trim()) return
     setLoading(true)
     setError(null)
+    setPdfNeedsPassword(false)
+    setPdfWrongPassword(false)
 
     try {
-      const data = await analyzeFile(file, secretKey.trim())
+      const pw = overridePdfPassword ?? pdfPassword
+      const data = await analyzeFile(file, secretKey.trim(), pw || undefined)
+
+      // Check if PDF needs a password
+      if (data?.needsPassword) {
+        setPdfNeedsPassword(true)
+        setPdfWrongPassword(data.wrongPassword || false)
+        setResults(null)
+        return
+      }
+
       setResults(data)
+      setPdfPassword('')
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to analyze file')
     } finally {
@@ -304,11 +320,19 @@ export default function FileAnalysis() {
     }
   }
 
+  const handlePdfPasswordSubmit = () => {
+    if (!pdfPassword.trim()) return
+    handleAnalyze(pdfPassword.trim())
+  }
+
   const clearFile = () => {
     setFile(null)
     setSecretKey('')
     setResults(null)
     setError(null)
+    setPdfPassword('')
+    setPdfNeedsPassword(false)
+    setPdfWrongPassword(false)
   }
 
   const getFileType = (filename: string) => {
@@ -421,9 +445,9 @@ export default function FileAnalysis() {
         )}
 
         {/* Analyze button */}
-        {file && !results && !loading && (
+        {file && !results && !loading && !pdfNeedsPassword && (
           <button
-            onClick={handleAnalyze}
+            onClick={() => handleAnalyze()}
             disabled={!secretKey.trim()}
             className="btn btn-primary w-full mt-4"
           >
@@ -443,6 +467,50 @@ export default function FileAnalysis() {
         )}
       </div>
 
+      {/* PDF Password Prompt */}
+      {pdfNeedsPassword && !loading && (
+        <div className="card border border-yellow-500/30">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 bg-yellow-500/20 rounded-lg">
+              <Lock className="h-5 w-5 text-yellow-500" />
+            </div>
+            <div>
+              <h3 className="text-white font-semibold">Password-Protected PDF</h3>
+              <p className="text-gray-400 text-sm">
+                {pdfWrongPassword
+                  ? 'Incorrect password. Please try again.'
+                  : 'This PDF is encrypted. Enter the password to unlock and analyze it.'}
+              </p>
+            </div>
+          </div>
+          {pdfWrongPassword && (
+            <div className="flex items-center gap-2 mb-3 text-red-400 text-sm">
+              <AlertTriangle className="h-4 w-4" />
+              <span>Wrong password provided</span>
+            </div>
+          )}
+          <div className="flex gap-3">
+            <input
+              type="password"
+              value={pdfPassword}
+              onChange={(e) => setPdfPassword(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handlePdfPasswordSubmit()}
+              placeholder="Enter PDF password"
+              className="input flex-1"
+              autoFocus
+            />
+            <button
+              onClick={handlePdfPasswordSubmit}
+              disabled={!pdfPassword.trim()}
+              className="btn btn-primary"
+            >
+              <Unlock className="h-4 w-4" />
+              <span>Unlock & Analyze</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Error */}
       {error && (
         <div className="card card-danger">
@@ -454,7 +522,7 @@ export default function FileAnalysis() {
       )}
 
       {/* Loading */}
-      {loading && <LoadingSpinner message="Analyzing file..." />}
+      {loading && <LoadingSpinner message={pdfPassword ? "Decrypting and analyzing PDF..." : "Analyzing file..."} />}
 
       {/* Results */}
       {results && !loading && <FileResults results={results} secretKey={secretKey} />}
