@@ -2979,6 +2979,7 @@ class URLAnalyzer:
             return result
 
         chromium_path = caps['chromium']['path']
+        print(f"[URL Analysis] Browser mode: chromium={chromium_path}, url={url}")
 
         # First, get the redirect chain using HTTP analysis
         http_result = self.analyze_http(url)
@@ -3002,6 +3003,8 @@ class URLAnalyzer:
 
         try:
             profile_dir = tempfile.mkdtemp(prefix='sandbox_chrome_')
+
+            print(f"[URL Analysis] URLs to capture: {urls_to_capture}, session_dir={self.session_dir}, profile_dir={profile_dir}")
 
             for i, capture_url in enumerate(urls_to_capture[:10]):  # Limit to 10 URLs
                 screenshot_path = os.path.join(self.session_dir, f'screenshot_{i}.png')
@@ -3068,6 +3071,7 @@ class URLAnalyzer:
                 result['screenshots'] = screenshots
 
         except Exception as e:
+            print(f"[URL Analysis] Outer exception: {e}")
             result['status'] = 'error'
             result['error'] = str(e)
         finally:
