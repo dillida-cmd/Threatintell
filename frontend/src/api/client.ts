@@ -33,19 +33,6 @@ export const analyzeUrl = async (url: string) => {
   return response.data
 }
 
-// Combined URL Lookup - Threat Intel + Analysis in parallel
-export const lookupUrl = async (url: string) => {
-  const [threatResult, analysisResult] = await Promise.allSettled([
-    lookupUrlThreat(url),
-    analyzeUrl(url),
-  ])
-  return {
-    threat: threatResult.status === 'fulfilled' ? threatResult.value : null,
-    threatError: threatResult.status === 'rejected' ? (threatResult.reason?.response?.data?.error || 'Threat intel lookup failed') : null,
-    analysis: analysisResult.status === 'fulfilled' ? analysisResult.value : null,
-    analysisError: analysisResult.status === 'rejected' ? (analysisResult.reason?.response?.data?.error || 'URL analysis failed') : null,
-  }
-}
 
 // Hash Lookup
 export const lookupHash = async (hash: string) => {

@@ -1,6 +1,6 @@
 import { useState, lazy, Suspense } from 'react'
 import { Search, Link, Shield, AlertTriangle, Camera, ExternalLink, Globe, X, ZoomIn, Server, Mail, Clock, CheckCircle, XCircle, Database, ShieldCheck, ShieldX } from 'lucide-react'
-import { lookupUrl } from '../api/client'
+import { lookupUrlThreat, analyzeUrl } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
 import AIValidation from '../components/AIValidation'
@@ -60,37 +60,38 @@ function ScreenshotThumbnail({ src, alt }: { src: string; alt: string }) {
 
 export default function UrlLookup() {
   const [url, setUrl] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [threatLoading, setThreatLoading] = useState(false)
+  const [analysisLoading, setAnalysisLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [threatResults, setThreatResults] = useState<any>(null)
   const [analysisResults, setAnalysisResults] = useState<any>(null)
   const [threatError, setThreatError] = useState<string | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
 
+  const loading = threatLoading || analysisLoading
+
   const handleLookup = async () => {
     if (!url.trim()) return
-    setLoading(true)
     setError(null)
     setThreatResults(null)
     setAnalysisResults(null)
     setThreatError(null)
     setAnalysisError(null)
+    setThreatLoading(true)
+    setAnalysisLoading(true)
 
-    try {
-      const data = await lookupUrl(url.trim())
-      setThreatResults(data.threat)
-      setAnalysisResults(data.analysis)
-      if (data.threatError) setThreatError(data.threatError)
-      if (data.analysisError) setAnalysisError(data.analysisError)
-      // If both failed, show a general error
-      if (!data.threat && !data.analysis) {
-        setError('Both threat intel and URL analysis failed. Please try again.')
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to investigate URL')
-    } finally {
-      setLoading(false)
-    }
+    const trimmedUrl = url.trim()
+
+    // Fire both calls independently - show results as each completes
+    lookupUrlThreat(trimmedUrl)
+      .then((data) => setThreatResults(data))
+      .catch((err) => setThreatError(err.response?.data?.error || 'Threat intel lookup failed'))
+      .finally(() => setThreatLoading(false))
+
+    analyzeUrl(trimmedUrl)
+      .then((data) => setAnalysisResults(data))
+      .catch((err) => setAnalysisError(err.response?.data?.error || 'URL analysis failed'))
+      .finally(() => setAnalysisLoading(false))
   }
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -151,13 +152,13 @@ export default function UrlLookup() {
         </div>
       )}
 
-      {/* Loading */}
-      {loading && (
+      {/* Loading - only show full spinner when nothing has loaded yet */}
+      {loading && !hasResults && (
         <LoadingSpinner message="Investigating URL..." />
       )}
 
-      {/* Combined Results */}
-      {hasResults && !loading && (
+      {/* Combined Results - show as they arrive */}
+      {hasResults && (
         <>
           {/* Combined Risk Score Header */}
           <div className="grid md:grid-cols-3 gap-6">
@@ -215,6 +216,9 @@ export default function UrlLookup() {
 
           {/* Analysis Results (without its own risk header) */}
           {analysisResults && <AnalysisResultsBody results={analysisResults} />}
+          {analysisLoading && (
+            <LoadingSpinner message="Capturing screenshots and analyzing URL..." />
+          )}
 
           {/* Attack Flow Diagram - render once from whichever source has it */}
           {(threatResults?.attackFlow || analysisResults?.attackFlow || analysisResults?.analysis?.finalUrl) && (
