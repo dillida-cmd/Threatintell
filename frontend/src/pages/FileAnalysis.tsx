@@ -710,6 +710,7 @@ function PdfResultsView({ analysis, riskScore }: { analysis: any; riskScore: num
   const metadata = analysis.metadata || {}
   const screenshots = analysis.pageScreenshots || analysis.page_screenshots || []
   const urls = analysis.urls || []
+  const enrichedUrls = analysis.enrichedUrls || analysis.enriched_urls || []
   const qrCodes = analysis.qrCodes || analysis.qr_codes || []
   const javascript = analysis.javascript || []
   const summary = analysis.summary || {}
@@ -802,7 +803,7 @@ function PdfResultsView({ analysis, riskScore }: { analysis: any; riskScore: num
             Page Screenshots ({screenshots.length})
           </h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {screenshots.slice(0, 10).map((screenshot: string, i: number) => (
+            {screenshots.slice(0, 5).map((screenshot: string, i: number) => (
               <ScreenshotThumbnail
                 key={i}
                 src={`data:image/png;base64,${screenshot}`}
@@ -832,7 +833,7 @@ function PdfResultsView({ analysis, riskScore }: { analysis: any; riskScore: num
       )}
 
       {/* URLs */}
-      {urls.length > 0 && <UrlList urls={urls} title="Extracted URLs" />}
+      {urls.length > 0 && <EnrichedUrlList urls={urls} enrichedUrls={enrichedUrls} title="Extracted URLs" />}
     </div>
   )
 }
@@ -844,6 +845,7 @@ function OfficeResultsView({ analysis, riskScore }: { analysis: any; riskScore: 
   const patterns = analysis.suspiciousPatterns || analysis.suspicious_patterns || []
   const screenshots = analysis.documentScreenshots || analysis.document_screenshots || []
   const urls = analysis.urls || []
+  const enrichedUrls = analysis.enrichedUrls || analysis.enriched_urls || []
   const summary = analysis.summary || {}
   const verdict = summary.verdict || analysis.verdict
 
@@ -933,7 +935,7 @@ function OfficeResultsView({ analysis, riskScore }: { analysis: any; riskScore: 
             Document Preview ({screenshots.length} pages)
           </h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {screenshots.slice(0, 10).map((screenshot: string, i: number) => (
+            {screenshots.slice(0, 5).map((screenshot: string, i: number) => (
               <ScreenshotThumbnail
                 key={i}
                 src={`data:image/png;base64,${screenshot}`}
@@ -946,7 +948,7 @@ function OfficeResultsView({ analysis, riskScore }: { analysis: any; riskScore: 
       )}
 
       {/* URLs */}
-      {urls.length > 0 && <UrlList urls={urls} title="Extracted URLs" />}
+      {urls.length > 0 && <EnrichedUrlList urls={urls} enrichedUrls={enrichedUrls} title="Extracted URLs" />}
     </div>
   )
 }
@@ -1382,6 +1384,74 @@ function UrlList({ urls, title }: { urls: string[]; title: string }) {
             {defangUrl(url)}
           </code>
         ))}
+      </div>
+    </div>
+  )
+}
+
+function EnrichedUrlList({ urls, enrichedUrls, title }: { urls: string[]; enrichedUrls: any[]; title: string }) {
+  // Build a map from raw URL to enriched data
+  const enrichedMap = new Map<string, any>()
+  if (enrichedUrls) {
+    for (const eu of enrichedUrls) {
+      if (eu.url) enrichedMap.set(eu.url, eu)
+    }
+  }
+
+  // If no enriched data, fall back to plain UrlList
+  if (enrichedMap.size === 0) {
+    return <UrlList urls={urls} title={title} />
+  }
+
+  const getMaxAbuseScore = (enriched: any): number => {
+    const threats = enriched.threat_info || []
+    if (threats.length === 0) return -1
+    return Math.max(...threats.map((t: any) => t.abuse_score ?? 0))
+  }
+
+  const getThreatBadge = (score: number) => {
+    if (score > 50) return { label: 'Malicious', className: 'bg-red-500/20 text-red-400 border border-red-500/40' }
+    if (score > 20) return { label: 'Suspicious', className: 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/40' }
+    if (score >= 0) return { label: 'Clean', className: 'bg-green-500/20 text-green-400 border border-green-500/40' }
+    return null
+  }
+
+  return (
+    <div className="card">
+      <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+        <Link className="h-5 w-5 text-primary-500" />
+        {title} ({urls.length})
+      </h3>
+      <div className="space-y-2 max-h-96 overflow-y-auto">
+        {urls.slice(0, 50).map((url, i) => {
+          const enriched = enrichedMap.get(url)
+          const abuseScore = enriched ? getMaxAbuseScore(enriched) : -1
+          const badge = getThreatBadge(abuseScore)
+          const domain = enriched?.domain
+          const resolvedIp = enriched?.dns?.ips?.[0]
+
+          return (
+            <div key={i} className={`p-3 rounded-lg ${abuseScore > 50 ? 'bg-red-500/5 border border-red-500/20' : 'bg-dark-500'}`}>
+              <div className="flex items-center gap-2 flex-wrap mb-1">
+                <code className="text-orange-400 text-xs break-all select-all flex-1" title="Defanged URL - safe to copy">
+                  {defangUrl(url)}
+                </code>
+                {badge && (
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${badge.className}`}>
+                    {badge.label}
+                  </span>
+                )}
+              </div>
+              {(domain || resolvedIp || abuseScore >= 0) && (
+                <div className="flex items-center gap-3 mt-1 text-xs text-gray-400">
+                  {domain && <span>{defangDomain(domain)}</span>}
+                  {resolvedIp && <span>{defangIp(resolvedIp)}</span>}
+                  {abuseScore >= 0 && <span>Abuse: {abuseScore}%</span>}
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )

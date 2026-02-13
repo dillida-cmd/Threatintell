@@ -2229,7 +2229,7 @@ def analyze_pdf(file_data, pdf_password=''):
         qr_codes = scan_for_qr_codes(images)
 
         # Generate page screenshots
-        page_screenshots = generate_pdf_page_screenshots(file_data, max_pages=10)
+        page_screenshots = generate_pdf_page_screenshots(file_data, max_pages=5)
 
         # Collect QR code URLs
         qr_urls = []
@@ -2759,7 +2759,7 @@ def analyze_office(file_data, filename):
             })
 
     # Generate document screenshots (convert to PDF first, then render pages)
-    results['documentScreenshots'] = generate_office_screenshots(file_data, filename, max_pages=10)
+    results['documentScreenshots'] = generate_office_screenshots(file_data, filename, max_pages=5)
 
     return results
 

@@ -726,6 +726,28 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
                 story.append(Paragraph("This PDF contains automatic actions that execute on open.", body_style))
                 story.append(Spacer(1, 10))
 
+        # Page screenshots (PDF and Office)
+        page_screenshots = []
+        if file_type == 'pdf':
+            page_screenshots = analysis_result.get('pageScreenshots', [])
+        elif file_type == 'office':
+            page_screenshots = analysis_result.get('documentScreenshots', [])
+
+        if page_screenshots:
+            story.append(Paragraph(f"Document Preview ({len(page_screenshots[:5])} pages)", heading_style))
+            for i, screenshot_b64 in enumerate(page_screenshots[:5]):
+                try:
+                    img_data = base64.b64decode(screenshot_b64)
+                    img_buffer = io.BytesIO(img_data)
+                    img = Image(img_buffer, width=5.5*inch, height=4*inch)
+                    img.hAlign = 'CENTER'
+                    story.append(Paragraph(f"Page {i + 1}", body_style))
+                    story.append(img)
+                    story.append(Spacer(1, 10))
+                except Exception:
+                    story.append(Paragraph(f"Page {i + 1}: [Screenshot unavailable]", body_style))
+            story.append(Spacer(1, 10))
+
         # Sandbox-specific sections
         if file_type in ('sandbox', 'sandbox_url'):
             # Session info
@@ -1047,14 +1069,53 @@ def create_analysis_pdf(analysis_result: Dict, output_path: str,
                 if analysis_result.get('finalUrl'):
                     story.append(Paragraph(f"Final URL: {defang_url(analysis_result['finalUrl'][:70])}", body_style))
 
-        # URLs Found (defanged)
+        # URLs Found (defanged) with enriched threat data
         urls = analysis_result.get('urls', [])
+        enriched_urls = analysis_result.get('enrichedUrls', [])
+        enriched_map = {}
+        for eu in enriched_urls:
+            if eu.get('url'):
+                enriched_map[eu['url']] = eu
+
         if urls:
             story.append(Paragraph("URLs Detected (defanged)", heading_style))
             for url in urls[:20]:  # Limit to 20
                 defanged = defang_url(url)
                 url_text = defanged if len(defanged) < 80 else defanged[:77] + "..."
-                story.append(Paragraph(f"• {url_text}", body_style))
+
+                enriched = enriched_map.get(url)
+                if enriched:
+                    # Get max abuse score from threat_info
+                    threats = enriched.get('threat_info', [])
+                    max_abuse = max((t.get('abuse_score', 0) for t in threats), default=-1) if threats else -1
+
+                    if max_abuse > 50:
+                        threat_label = f"<font color='red'>[MALICIOUS - Abuse: {max_abuse}%]</font>"
+                    elif max_abuse > 20:
+                        threat_label = f"<font color='orange'>[SUSPICIOUS - Abuse: {max_abuse}%]</font>"
+                    elif max_abuse >= 0:
+                        threat_label = f"<font color='green'>[CLEAN - Abuse: {max_abuse}%]</font>"
+                    else:
+                        threat_label = ""
+
+                    domain = enriched.get('domain', '')
+                    resolved_ip = ''
+                    dns_ips = enriched.get('dns', {})
+                    if dns_ips and dns_ips.get('ips'):
+                        resolved_ip = defang_ip(dns_ips['ips'][0])
+
+                    detail_parts = []
+                    if domain:
+                        detail_parts.append(defang_domain(domain))
+                    if resolved_ip:
+                        detail_parts.append(resolved_ip)
+
+                    story.append(Paragraph(f"• {url_text} {threat_label}", body_style))
+                    if detail_parts:
+                        story.append(Paragraph(f"  ({' | '.join(detail_parts)})", body_style))
+                else:
+                    story.append(Paragraph(f"• {url_text}", body_style))
+
             if len(urls) > 20:
                 story.append(Paragraph(f"... and {len(urls) - 20} more URLs", body_style))
             story.append(Spacer(1, 10))
