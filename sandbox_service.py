@@ -47,6 +47,9 @@ MAX_CONCURRENT_SESSIONS = 3
 MEMORY_LIMIT_MB = 512
 DISK_LIMIT_MB = 100
 
+# Realistic browser User-Agent to avoid bot detection
+REALISTIC_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+
 # File type detection
 MAGIC_SIGNATURES = {
     b'MZ': 'executable',  # PE/DOS
@@ -2922,7 +2925,7 @@ class URLAnalyzer:
             )
 
             req = urllib.request.Request(url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': REALISTIC_UA
             })
 
             with opener.open(req, timeout=self.timeout) as response:
@@ -3006,17 +3009,19 @@ class URLAnalyzer:
                 # Build Chrome command
                 chrome_args = [
                     chromium_path,
-                    '--headless',
+                    '--headless=new',
                     '--disable-gpu',
                     '--no-sandbox',
                     '--disable-dev-shm-usage',
                     '--disable-web-security',
                     '--disable-features=IsolateOrigins,site-per-process',
+                    f'--user-agent={REALISTIC_UA}',
+                    '--disable-blink-features=AutomationControlled',
                     '--window-size=1920,1080',
                     '--hide-scrollbars',
                     f'--user-data-dir={profile_dir}',
                     f'--screenshot={screenshot_path}',
-                    '--virtual-time-budget=10000',  # 10 second JS execution budget
+                    '--run-all-compositor-stages-before-draw',
                     capture_url
                 ]
 
