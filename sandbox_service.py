@@ -2979,7 +2979,6 @@ class URLAnalyzer:
             return result
 
         chromium_path = caps['chromium']['path']
-        print(f"[URL Analysis] Browser mode: chromium={chromium_path}, url={url}", flush=True)
 
         # First, get the redirect chain using HTTP analysis
         http_result = self.analyze_http(url)
@@ -3003,8 +3002,6 @@ class URLAnalyzer:
 
         try:
             profile_dir = tempfile.mkdtemp(prefix='sandbox_chrome_')
-
-            print(f"[URL Analysis] URLs to capture: {urls_to_capture}, session_dir={self.session_dir}, profile_dir={profile_dir}", flush=True)
 
             for i, capture_url in enumerate(urls_to_capture[:10]):  # Limit to 10 URLs
                 screenshot_path = os.path.join(self.session_dir, f'screenshot_{i}.png')
@@ -3035,16 +3032,6 @@ class URLAnalyzer:
                         timeout=30,  # 30 sec per URL
                     )
 
-                    # Debug: log Chromium exit code and errors
-                    chrome_stderr = proc.stderr.decode('utf-8', errors='replace') if proc.stderr else ''
-                    if proc.returncode != 0:
-                        print(f"[URL Analysis] Chromium exit code {proc.returncode} for {capture_url}", flush=True)
-                        print(f"[URL Analysis] Chromium stderr: {chrome_stderr[:500]}", flush=True)
-                    if not os.path.exists(screenshot_path):
-                        print(f"[URL Analysis] Screenshot file not created for {capture_url}", flush=True)
-                    elif os.path.getsize(screenshot_path) == 0:
-                        print(f"[URL Analysis] Screenshot file is empty for {capture_url}", flush=True)
-
                     # Check screenshot
                     if os.path.exists(screenshot_path) and os.path.getsize(screenshot_path) > 0:
                         with open(screenshot_path, 'rb') as f:
@@ -3061,9 +3048,9 @@ class URLAnalyzer:
                     self.ioc_collector.extract_from_text(stdout + stderr)
 
                 except subprocess.TimeoutExpired:
-                    print(f"[URL Analysis] Screenshot timeout for {capture_url}", flush=True)
+                    print(f"[URL Analysis] Screenshot timeout for {capture_url}")
                 except Exception as e:
-                    print(f"[URL Analysis] Screenshot error for {capture_url}: {e}", flush=True)
+                    print(f"[URL Analysis] Screenshot error for {capture_url}: {e}")
 
             # Final screenshot is the last one captured
             if screenshots:
@@ -3071,7 +3058,6 @@ class URLAnalyzer:
                 result['screenshots'] = screenshots
 
         except Exception as e:
-            print(f"[URL Analysis] Outer exception: {e}", flush=True)
             result['status'] = 'error'
             result['error'] = str(e)
         finally:

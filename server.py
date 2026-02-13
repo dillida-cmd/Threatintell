@@ -3807,7 +3807,6 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             timeout = min(data.get('timeout', 30), 300)
 
             # Analyze URL in sandbox
-            print(f"[Sandbox URL] Calling analyze_url: url={normalized_url}, mode={mode}", flush=True)
             service = sandbox_service.get_service()
             result = service.analyze_url(
                 url=normalized_url,
