@@ -140,6 +140,7 @@ sudo -u shieldtier ./venv/bin/pip install \
     requests \
     reportlab \
     PyPDF2 \
+    PyMuPDF \
     Pillow \
     selenium \
     pyzbar \
