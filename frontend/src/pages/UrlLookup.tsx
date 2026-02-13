@@ -1,6 +1,6 @@
 import { useState, lazy, Suspense } from 'react'
-import { Search, Link, Shield, AlertTriangle, Camera, ExternalLink, Globe, ArrowRight, X, ZoomIn, Server, Mail, Clock, CheckCircle, XCircle, Database, ShieldCheck, ShieldX } from 'lucide-react'
-import { lookupUrlThreat, analyzeUrl } from '../api/client'
+import { Search, Link, Shield, AlertTriangle, Camera, ExternalLink, Globe, X, ZoomIn, Server, Mail, Clock, CheckCircle, XCircle, Database, ShieldCheck, ShieldX } from 'lucide-react'
+import { lookupUrl } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
 import AIValidation from '../components/AIValidation'
@@ -58,31 +58,36 @@ function ScreenshotThumbnail({ src, alt }: { src: string; alt: string }) {
   )
 }
 
-type Tab = 'threat' | 'analysis'
-
 export default function UrlLookup() {
-  const [activeTab, setActiveTab] = useState<Tab>('threat')
   const [url, setUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [results, setResults] = useState<any>(null)
+  const [threatResults, setThreatResults] = useState<any>(null)
+  const [analysisResults, setAnalysisResults] = useState<any>(null)
+  const [threatError, setThreatError] = useState<string | null>(null)
+  const [analysisError, setAnalysisError] = useState<string | null>(null)
 
   const handleLookup = async () => {
     if (!url.trim()) return
     setLoading(true)
     setError(null)
-    setResults(null)
+    setThreatResults(null)
+    setAnalysisResults(null)
+    setThreatError(null)
+    setAnalysisError(null)
 
     try {
-      let data
-      if (activeTab === 'threat') {
-        data = await lookupUrlThreat(url.trim())
-      } else {
-        data = await analyzeUrl(url.trim())
+      const data = await lookupUrl(url.trim())
+      setThreatResults(data.threat)
+      setAnalysisResults(data.analysis)
+      if (data.threatError) setThreatError(data.threatError)
+      if (data.analysisError) setAnalysisError(data.analysisError)
+      // If both failed, show a general error
+      if (!data.threat && !data.analysis) {
+        setError('Both threat intel and URL analysis failed. Please try again.')
       }
-      setResults(data)
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to analyze URL')
+      setError(err.message || 'Failed to investigate URL')
     } finally {
       setLoading(false)
     }
@@ -92,10 +97,14 @@ export default function UrlLookup() {
     if (e.key === 'Enter') handleLookup()
   }
 
-  const clearResults = () => {
-    setResults(null)
-    setError(null)
-  }
+  const hasResults = threatResults || analysisResults
+
+  // Compute combined risk score (use highest from either source)
+  const threatScore = threatResults?.aiValidation?.validatedScore ?? threatResults?.summary?.riskScore ?? null
+  const analysisScore = analysisResults?.analysis?.riskScore ?? analysisResults?.riskScore ?? null
+  const combinedScore = threatScore !== null && analysisScore !== null
+    ? Math.max(threatScore, analysisScore)
+    : threatScore ?? analysisScore ?? 0
 
   return (
     <div className="space-y-6">
@@ -107,42 +116,9 @@ export default function UrlLookup() {
           </div>
           <div>
             <h2 className="text-xl font-bold text-white">URL Lookup</h2>
-            <p className="text-gray-400 text-sm">Analyze URLs for threats and capture screenshots</p>
+            <p className="text-gray-400 text-sm">Investigate URLs with threat intel, screenshots, and IOC extraction</p>
           </div>
         </div>
-
-        {/* Tabs */}
-        <div className="flex gap-2 mb-6 p-1 bg-dark-500 rounded-xl">
-          <button
-            onClick={() => { setActiveTab('threat'); clearResults() }}
-            className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg font-medium transition-all ${
-              activeTab === 'threat'
-                ? 'bg-primary-600 text-white shadow-lg'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <Shield className="h-4 w-4" />
-            Threat Intel
-          </button>
-          <button
-            onClick={() => { setActiveTab('analysis'); clearResults() }}
-            className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg font-medium transition-all ${
-              activeTab === 'analysis'
-                ? 'bg-primary-600 text-white shadow-lg'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <Camera className="h-4 w-4" />
-            URL Analysis
-          </button>
-        </div>
-
-        {/* Description */}
-        <p className="text-gray-400 text-sm mb-4">
-          {activeTab === 'threat'
-            ? 'Check URL reputation against VirusTotal, URLhaus, and AlienVault OTX.'
-            : 'Analyze URL with screenshots of each redirect step and IOC extraction.'}
-        </p>
 
         {/* Input */}
         <div className="flex gap-3">
@@ -160,7 +136,7 @@ export default function UrlLookup() {
             className="btn btn-primary"
           >
             <Search className="h-5 w-5" />
-            <span>{activeTab === 'threat' ? 'Check' : 'Analyze'}</span>
+            <span>Investigate</span>
           </button>
         </div>
       </div>
@@ -177,83 +153,99 @@ export default function UrlLookup() {
 
       {/* Loading */}
       {loading && (
-        <LoadingSpinner
-          message={activeTab === 'threat' ? 'Checking threat databases...' : 'Analyzing URL and capturing screenshots...'}
-        />
+        <LoadingSpinner message="Investigating URL..." />
       )}
 
-      {/* Results */}
-      {results && !loading && (
-        activeTab === 'threat' ? (
-          <ThreatResults results={results} />
-        ) : (
-          <AnalysisResults results={results} />
-        )
+      {/* Combined Results */}
+      {hasResults && !loading && (
+        <>
+          {/* Combined Risk Score Header */}
+          <div className="grid md:grid-cols-3 gap-6">
+            <div className="card flex items-center justify-center">
+              <RiskGauge score={combinedScore} size="lg" />
+            </div>
+            <div className="card md:col-span-2">
+              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                <Shield className="h-5 w-5 text-primary-500" />
+                URL Investigation
+              </h3>
+              <code className="block p-3 bg-dark-500 rounded-lg text-orange-400 text-sm break-all mb-4 select-all" title="Defanged URL - safe to copy">
+                {defangUrl(url)}
+              </code>
+              <div className="flex flex-wrap gap-2">
+                {threatScore !== null && (
+                  <span className="badge badge-info">Threat Score: {threatScore}</span>
+                )}
+                {analysisScore !== null && (
+                  <span className="badge badge-info">Analysis Score: {analysisScore}</span>
+                )}
+                {threatResults?.summary?.isMalicious && (
+                  <span className="badge badge-danger">MALICIOUS</span>
+                )}
+                {threatResults?.sources?.virustotal?.malicious > 0 && (
+                  <span className="badge badge-warning">{threatResults.sources.virustotal.malicious} Detection{threatResults.sources.virustotal.malicious > 1 ? 's' : ''}</span>
+                )}
+                {threatResults?.sources?.urlhaus?.threat && (
+                  <span className="badge badge-danger">{threatResults.sources.urlhaus.threat}</span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Partial failure warnings */}
+          {threatError && (
+            <div className="card border border-yellow-500/30 bg-yellow-500/5">
+              <div className="flex items-center gap-3 text-yellow-400">
+                <AlertTriangle className="h-5 w-5" />
+                <span>Threat intel lookup failed: {threatError}</span>
+              </div>
+            </div>
+          )}
+          {analysisError && (
+            <div className="card border border-yellow-500/30 bg-yellow-500/5">
+              <div className="flex items-center gap-3 text-yellow-400">
+                <AlertTriangle className="h-5 w-5" />
+                <span>URL analysis failed: {analysisError}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Threat Intel Results (without its own risk header) */}
+          {threatResults && <ThreatResultsBody results={threatResults} />}
+
+          {/* Analysis Results (without its own risk header) */}
+          {analysisResults && <AnalysisResultsBody results={analysisResults} />}
+        </>
       )}
     </div>
   )
 }
 
-function ThreatResults({ results }: { results: any }) {
+// Body-only variant for combined view (no risk score header)
+function ThreatResultsBody({ results }: { results: any }) {
   const summary = results.summary || {}
   const sources = results.sources || {}
   const aiValidation = results.aiValidation || {}
-
-  // Use AI-validated score if available, otherwise fall back to original
   const hasAiValidation = results.aiValidation && typeof aiValidation.validatedScore === 'number'
-  const riskScore = hasAiValidation ? aiValidation.validatedScore : (summary.riskScore || 0)
   const isMalicious = hasAiValidation ? aiValidation.validatedMalicious : summary.isMalicious
   const recommendation = hasAiValidation ? aiValidation.recommendation : null
 
   return (
     <div className="space-y-6">
-      {/* Risk Score and URL */}
-      <div className="grid md:grid-cols-3 gap-6">
-        <div className="card flex items-center justify-center">
-          <RiskGauge score={riskScore} size="lg" />
+      {/* AI Recommendation / Verdict */}
+      {(recommendation || summary.verdict) && (
+        <div className={`card ${
+          isMalicious
+            ? 'bg-red-500/10 border border-red-500/30'
+            : 'bg-green-500/10 border border-green-500/30'
+        }`}>
+          <p className={`text-sm leading-relaxed ${
+            isMalicious ? 'text-red-300' : 'text-green-300'
+          }`}>
+            {recommendation || summary.verdict}
+          </p>
         </div>
-
-        <div className="card md:col-span-2">
-          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-            <Link className="h-5 w-5 text-primary-500" />
-            URL Analysis
-          </h3>
-          <code className="block p-3 bg-dark-500 rounded-lg text-orange-400 text-sm break-all mb-4 select-all" title="Defanged URL - safe to copy">
-            {defangUrl(results.url)}
-          </code>
-          <div className="flex flex-wrap gap-2 mb-4">
-            {isMalicious ? (
-              <span className="badge badge-danger">MALICIOUS</span>
-            ) : (
-              <span className="badge badge-success">CLEAN</span>
-            )}
-            {sources.virustotal?.malicious > 0 && (
-              <span className="badge badge-warning">{sources.virustotal.malicious} Detection{sources.virustotal.malicious > 1 ? 's' : ''}</span>
-            )}
-            {sources.urlhaus?.threat && (
-              <span className="badge badge-danger">{sources.urlhaus.threat}</span>
-            )}
-            {hasAiValidation && aiValidation.confidence && (
-              <span className="badge badge-info">AI Confidence: {aiValidation.confidence}%</span>
-            )}
-          </div>
-
-          {/* AI Recommendation (primary) or Original Verdict (fallback) */}
-          {(recommendation || summary.verdict) && (
-            <div className={`p-4 rounded-lg ${
-              isMalicious
-                ? 'bg-red-500/10 border border-red-500/30'
-                : 'bg-green-500/10 border border-green-500/30'
-            }`}>
-              <p className={`text-sm leading-relaxed ${
-                isMalicious ? 'text-red-300' : 'text-green-300'
-              }`}>
-                {recommendation || summary.verdict}
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
+      )}
 
       {/* AI Risk Validation Details */}
       {results.aiValidation && (
@@ -630,43 +622,15 @@ function ThreatResults({ results }: { results: any }) {
   )
 }
 
-function AnalysisResults({ results }: { results: any }) {
+// Body-only variant for combined view (no risk score header)
+function AnalysisResultsBody({ results }: { results: any }) {
   const analysis = results.analysis || results
-  const riskScore = analysis.riskScore || 0
   const redirectChain = analysis.redirectChain || []
   const screenshots = analysis.screenshots || []
   const iocs = analysis.extractedIocs || analysis.iocs || {}
 
   return (
     <div className="space-y-6">
-      {/* Risk Score and Summary */}
-      <div className="grid md:grid-cols-3 gap-6">
-        <div className="card flex items-center justify-center">
-          <RiskGauge score={riskScore} size="lg" />
-        </div>
-
-        <div className="card md:col-span-2">
-          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-            <Camera className="h-5 w-5 text-primary-500" />
-            Analysis Results
-          </h3>
-          <code className="block p-3 bg-dark-500 rounded-lg text-orange-400 text-sm break-all mb-4 select-all" title="Defanged URL">
-            {defangUrl(analysis.url)}
-          </code>
-          <div className="flex flex-wrap gap-2">
-            <span className={`badge ${riskScore >= 50 ? 'badge-danger' : riskScore >= 20 ? 'badge-warning' : 'badge-success'}`}>
-              {analysis.riskLevel || 'Unknown'} Risk
-            </span>
-            {analysis.finalUrl && analysis.finalUrl !== analysis.url && (
-              <span className="badge badge-warning">Redirects Detected</span>
-            )}
-            {redirectChain.length > 0 && (
-              <span className="badge badge-info">{redirectChain.length} Redirects</span>
-            )}
-          </div>
-        </div>
-      </div>
-
       {/* Redirect Chain with Screenshots */}
       {(redirectChain.length > 0 || screenshots.length > 0) && (
         <div className="card">
