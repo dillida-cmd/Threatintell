@@ -215,6 +215,16 @@ export default function UrlLookup() {
 
           {/* Analysis Results (without its own risk header) */}
           {analysisResults && <AnalysisResultsBody results={analysisResults} />}
+
+          {/* Attack Flow Diagram - render once from whichever source has it */}
+          {(threatResults?.attackFlow || analysisResults?.attackFlow || analysisResults?.analysis?.finalUrl) && (
+            <Suspense fallback={<div className="card"><LoadingSpinner message="Loading flow diagram..." /></div>}>
+              <AttackFlowDiagram
+                attackFlow={threatResults?.attackFlow || analysisResults?.attackFlow}
+                analysis={analysisResults?.analysis || analysisResults}
+              />
+            </Suspense>
+          )}
         </>
       )}
     </div>
@@ -612,12 +622,6 @@ function ThreatResultsBody({ results }: { results: any }) {
         </div>
       )}
 
-      {/* Attack Flow Diagram */}
-      {results.attackFlow && (
-        <Suspense fallback={<div className="card"><LoadingSpinner message="Loading flow diagram..." /></div>}>
-          <AttackFlowDiagram attackFlow={results.attackFlow} />
-        </Suspense>
-      )}
     </div>
   )
 }
@@ -731,12 +735,6 @@ function AnalysisResultsBody({ results }: { results: any }) {
         </div>
       )}
 
-      {/* Attack Flow Diagram - Visual representation of URL redirect chain */}
-      {(redirectChain.length > 0 || analysis.finalUrl || results.attackFlow) && (
-        <Suspense fallback={<div className="card"><LoadingSpinner message="Loading flow diagram..." /></div>}>
-          <AttackFlowDiagram analysis={analysis} attackFlow={results.attackFlow} />
-        </Suspense>
-      )}
     </div>
   )
 }
