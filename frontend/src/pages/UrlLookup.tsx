@@ -370,7 +370,7 @@ function ThreatResultsBody({ results }: { results: any }) {
       )}
 
       {/* DNS Intelligence */}
-      {results.dns && !results.dns.error && (
+      {results.dns && !results.dns.error && results.dns.records && (
         <div className="card">
           <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
             <Server className="h-5 w-5 text-primary-500" />
@@ -554,7 +554,7 @@ function ThreatResultsBody({ results }: { results: any }) {
       )}
 
       {/* WHOIS Information */}
-      {results.whois && !results.whois.error && (
+      {results.whois && !results.whois.error && (results.whois.registrar || results.whois.domainAge || results.whois.creationDate) && (
         <div className="card">
           <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
             <Globe className="h-5 w-5 text-primary-500" />
