@@ -3032,6 +3032,16 @@ class URLAnalyzer:
                         timeout=30,  # 30 sec per URL
                     )
 
+                    # Debug: log Chromium exit code and errors
+                    chrome_stderr = proc.stderr.decode('utf-8', errors='replace') if proc.stderr else ''
+                    if proc.returncode != 0:
+                        print(f"[URL Analysis] Chromium exit code {proc.returncode} for {capture_url}")
+                        print(f"[URL Analysis] Chromium stderr: {chrome_stderr[:500]}")
+                    if not os.path.exists(screenshot_path):
+                        print(f"[URL Analysis] Screenshot file not created for {capture_url}")
+                    elif os.path.getsize(screenshot_path) == 0:
+                        print(f"[URL Analysis] Screenshot file is empty for {capture_url}")
+
                     # Check screenshot
                     if os.path.exists(screenshot_path) and os.path.getsize(screenshot_path) > 0:
                         with open(screenshot_path, 'rb') as f:
