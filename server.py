@@ -153,8 +153,26 @@ QR_VCARD_PATTERN = re.compile(r'BEGIN:VCARD', re.IGNORECASE)
 
 
 # ============================================================================
-# URL Normalization
+# URL Refanging & Normalization
 # ============================================================================
+
+def refang_url(url: str) -> str:
+    """Convert defanged URLs back to real URLs.
+    Handles: [.] → .   hxxp → http   [://] → ://   [:]  → :   [at] → @
+    """
+    if not url:
+        return url
+    url = url.replace('[.]', '.')
+    url = url.replace('(.]', '.')
+    url = url.replace('[.)', '.')
+    url = url.replace('(.)', '.')
+    url = re.sub(r'\[:\]', ':', url)
+    url = re.sub(r'\[://\]', '://', url)
+    url = re.sub(r'\[at\]', '@', url, flags=re.I)
+    url = re.sub(r'hxxps?', lambda m: m.group(0).replace('xx', 'tt'), url, flags=re.I)
+    url = re.sub(r'hXXp', 'http', url, flags=re.I)
+    return url
+
 
 def normalize_url_for_api(url: str) -> str:
     """
@@ -3338,7 +3356,7 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             data = json.loads(body) if body else {}
 
             ips = data.get('ips', [])
-            urls = data.get('urls', [])
+            urls = [refang_url(u) for u in data.get('urls', [])]
             hashes = data.get('hashes', [])
             max_per_type = data.get('maxPerType', 5)
 
@@ -3408,6 +3426,9 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             if not url:
                 self.send_json({'error': 'URL required'}, 400)
                 return
+
+            # --- Refang defanged URLs: [.] → .  hxxp → http  etc. ---
+            url = refang_url(url)
 
             # --- Unwrap URL if wrapped by Defender Safe Links / Proofpoint / etc. ---
             unwrap_result = unwrap_url(url)
