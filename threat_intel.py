@@ -1866,6 +1866,255 @@ def check_shodan(ip: str) -> Dict:
 
 
 # =============================================================================
+# MISP Threat Intelligence Platform
+# =============================================================================
+
+def _misp_request(endpoint: str, data: Dict = None, method: str = 'POST') -> Optional[Dict]:
+    """Make a request to the local MISP instance."""
+    config = load_config()
+    misp_config = config.get('misp', {})
+    api_key = misp_config.get('api_key', '')
+    base_url = misp_config.get('base_url', '').rstrip('/')
+    verify_ssl = misp_config.get('verify_ssl', False)
+
+    if not api_key or not base_url:
+        return None
+
+    url = f"{base_url}{endpoint}"
+    headers = {
+        'Authorization': api_key,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+    }
+
+    try:
+        body = json.dumps(data).encode() if data else None
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+
+        import ssl
+        ctx = ssl.create_default_context()
+        if not verify_ssl:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except Exception as e:
+        print(f"[MISP] Request error ({endpoint}): {e}")
+        return None
+
+
+def check_misp_ip(ip: str) -> Dict:
+    """Check IP address against local MISP instance."""
+    cache_key = f"misp:ip:{ip}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    if not is_service_enabled('misp'):
+        return {'error': 'MISP not enabled', 'source': 'misp'}
+
+    if not check_rate_limit('misp', 1000, 3600):
+        return {'error': 'Rate limit exceeded', 'source': 'misp'}
+
+    # Search for IP in both ip-src and ip-dst attribute types
+    response = _misp_request('/attributes/restSearch', {
+        'type': ['ip-src', 'ip-dst', 'ip-dst|port', 'ip-src|port'],
+        'value': ip,
+        'limit': 50,
+        'returnFormat': 'json',
+    })
+
+    if not response or 'response' not in response:
+        return {'error': 'No data returned', 'source': 'misp'}
+
+    attributes = response.get('response', {}).get('Attribute', [])
+
+    # Collect unique event IDs and details
+    event_ids = set()
+    events_detail = []
+    for attr in attributes:
+        eid = attr.get('event_id')
+        if eid and eid not in event_ids:
+            event_ids.add(eid)
+            events_detail.append({
+                'eventId': eid,
+                'category': attr.get('category', ''),
+                'type': attr.get('type', ''),
+                'comment': (attr.get('comment') or '')[:200],
+                'timestamp': attr.get('timestamp', ''),
+            })
+
+    result = {
+        'source': 'misp',
+        'ip': ip,
+        'found': len(event_ids) > 0,
+        'attributeCount': len(attributes),
+        'eventCount': len(event_ids),
+        'events': events_detail[:10],
+    }
+
+    set_cached(cache_key, result)
+    return result
+
+
+def check_misp_url(url_to_check: str) -> Dict:
+    """Check URL/domain against local MISP instance."""
+    from urllib.parse import urlparse as _urlparse
+
+    cache_key = f"misp:url:{hashlib.md5(url_to_check.encode()).hexdigest()}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    if not is_service_enabled('misp'):
+        return {'error': 'MISP not enabled', 'source': 'misp'}
+
+    if not check_rate_limit('misp', 1000, 3600):
+        return {'error': 'Rate limit exceeded', 'source': 'misp'}
+
+    # Extract domain for additional search
+    try:
+        domain = _urlparse(url_to_check).netloc.lower()
+        if ':' in domain:
+            domain = domain.split(':')[0]
+    except Exception:
+        domain = None
+
+    # Search URL and domain
+    search_types = ['url', 'link']
+    search_value = url_to_check
+
+    response = _misp_request('/attributes/restSearch', {
+        'type': search_types,
+        'value': f"%{search_value}%",
+        'limit': 50,
+        'returnFormat': 'json',
+    })
+
+    attributes = []
+    if response and 'response' in response:
+        attributes = response.get('response', {}).get('Attribute', [])
+
+    # Also search by domain if available
+    if domain:
+        domain_resp = _misp_request('/attributes/restSearch', {
+            'type': ['domain', 'hostname', 'domain|ip'],
+            'value': domain,
+            'limit': 50,
+            'returnFormat': 'json',
+        })
+        if domain_resp and 'response' in domain_resp:
+            attributes += domain_resp.get('response', {}).get('Attribute', [])
+
+    # Deduplicate by attribute ID
+    seen_ids = set()
+    unique_attrs = []
+    for attr in attributes:
+        aid = attr.get('id')
+        if aid not in seen_ids:
+            seen_ids.add(aid)
+            unique_attrs.append(attr)
+
+    event_ids = set()
+    events_detail = []
+    for attr in unique_attrs:
+        eid = attr.get('event_id')
+        if eid and eid not in event_ids:
+            event_ids.add(eid)
+            events_detail.append({
+                'eventId': eid,
+                'category': attr.get('category', ''),
+                'type': attr.get('type', ''),
+                'matchedValue': (attr.get('value') or '')[:120],
+                'comment': (attr.get('comment') or '')[:200],
+                'timestamp': attr.get('timestamp', ''),
+            })
+
+    result = {
+        'source': 'misp',
+        'url': url_to_check,
+        'domain': domain,
+        'found': len(event_ids) > 0,
+        'attributeCount': len(unique_attrs),
+        'eventCount': len(event_ids),
+        'events': events_detail[:10],
+    }
+
+    set_cached(cache_key, result)
+    return result
+
+
+def check_misp_hash(file_hash: str) -> Dict:
+    """Check file hash against local MISP instance."""
+    cache_key = f"misp:hash:{file_hash}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    if not is_service_enabled('misp'):
+        return {'error': 'MISP not enabled', 'source': 'misp'}
+
+    if not check_rate_limit('misp', 1000, 3600):
+        return {'error': 'Rate limit exceeded', 'source': 'misp'}
+
+    # Determine hash type
+    hash_len = len(file_hash)
+    if hash_len == 32:
+        hash_types = ['md5', 'filename|md5']
+    elif hash_len == 40:
+        hash_types = ['sha1', 'filename|sha1']
+    elif hash_len == 64:
+        hash_types = ['sha256', 'filename|sha256']
+    else:
+        hash_types = ['md5', 'sha1', 'sha256']
+
+    response = _misp_request('/attributes/restSearch', {
+        'type': hash_types,
+        'value': file_hash,
+        'limit': 50,
+        'returnFormat': 'json',
+    })
+
+    if not response or 'response' not in response:
+        return {'error': 'No data returned', 'source': 'misp'}
+
+    attributes = response.get('response', {}).get('Attribute', [])
+
+    event_ids = set()
+    events_detail = []
+    malware_names = set()
+    for attr in attributes:
+        eid = attr.get('event_id')
+        if eid and eid not in event_ids:
+            event_ids.add(eid)
+            comment = attr.get('comment') or ''
+            if comment:
+                malware_names.add(comment[:100])
+            events_detail.append({
+                'eventId': eid,
+                'category': attr.get('category', ''),
+                'type': attr.get('type', ''),
+                'comment': comment[:200],
+                'timestamp': attr.get('timestamp', ''),
+            })
+
+    result = {
+        'source': 'misp',
+        'hash': file_hash,
+        'hashType': 'md5' if hash_len == 32 else 'sha1' if hash_len == 40 else 'sha256' if hash_len == 64 else 'unknown',
+        'found': len(event_ids) > 0,
+        'attributeCount': len(attributes),
+        'eventCount': len(event_ids),
+        'events': events_detail[:10],
+        'malwareNames': list(malware_names)[:5],
+    }
+
+    set_cached(cache_key, result)
+    return result
+
+
+# =============================================================================
 # Aggregated Investigation Functions
 # =============================================================================
 
@@ -1893,6 +2142,7 @@ def investigate_ip(ip: str) -> Dict:
         ('greynoise', check_greynoise),
         ('shodan', check_shodan),
         ('threatfox', lambda ip: check_threatfox_ioc(ip, 'ip:port')),
+        ('misp', check_misp_ip),
     ]
 
     for service_name, check_func in services:
@@ -1920,6 +2170,9 @@ def investigate_ip(ip: str) -> Dict:
                     elif service_name == 'threatfox' and result.get('found'):
                         results['summary']['maliciousSources'] += 1
                         results['summary']['findings'].append("ThreatFox: Known malicious IOC")
+                    elif service_name == 'misp' and result.get('found'):
+                        results['summary']['maliciousSources'] += 1
+                        results['summary']['findings'].append(f"MISP: Found in {result.get('eventCount')} threat intel events")
             except Exception as e:
                 results['sources'][service_name] = {'error': str(e)}
 
@@ -1997,6 +2250,19 @@ def investigate_ip(ip: str) -> Dict:
             if gn.get('noise') and gn.get('classification') == 'malicious':
                 threat_indicators += 1
                 threat_score += 30
+
+        # MISP - local threat intelligence repository
+        if 'misp' in sources:
+            misp_data = sources['misp']
+            event_count = misp_data.get('eventCount', 0)
+            if event_count >= 5:
+                threat_indicators += 2  # Strong signal — multiple MISP events
+                threat_score += min(50, event_count * 5)
+            elif event_count > 0:
+                threat_indicators += 1
+                threat_score += min(30, event_count * 8)
+            elif not misp_data.get('found'):
+                clean_indicators += 1
 
         # Consensus-based final score calculation
         if threat_indicators > 0 and clean_indicators == 0:
@@ -2597,6 +2863,7 @@ def investigate_url(url: str) -> Dict:
         ('virustotal', check_virustotal_url),
         ('urlhaus', check_urlhaus),
         ('alienvault_otx', check_alienvault_url),
+        ('misp', check_misp_url),
     ]
 
     for service_name, check_func in services:
@@ -2615,6 +2882,9 @@ def investigate_url(url: str) -> Dict:
                         results['summary']['findings'].append(f"URLhaus: {result.get('threat')}")
                     elif service_name == 'alienvault_otx' and result.get('pulseCount', 0) > 0:
                         results['summary']['findings'].append(f"AlienVault: {result.get('pulseCount')} threat pulses")
+                    elif service_name == 'misp' and result.get('found'):
+                        results['summary']['maliciousSources'] += 1
+                        results['summary']['findings'].append(f"MISP: Found in {result.get('eventCount')} threat intel events")
             except Exception as e:
                 results['sources'][service_name] = {'error': str(e)}
 
@@ -2770,6 +3040,7 @@ def investigate_hash(file_hash: str) -> Dict:
         ('malwarebazaar', check_malwarebazaar_hash),
         ('urlhaus', check_urlhaus_hash),
         ('alienvault_otx', check_alienvault_hash),
+        ('misp', check_misp_hash),
     ]
 
     for service_name, check_func in services:
@@ -2845,6 +3116,19 @@ def investigate_hash(file_hash: str) -> Dict:
                             'severity': 'medium' if pulse_count < 5 else 'high',
                             'source': 'AlienVault OTX',
                             'score_contribution': min(20, pulse_count * 4)
+                        })
+
+                    elif service_name == 'misp' and result.get('found'):
+                        event_count = result.get('eventCount', 0)
+                        results['summary']['maliciousSources'] += 1
+                        malware_info = ', '.join(result.get('malwareNames', [])[:3]) or 'Threat intel match'
+                        results['summary']['findings'].append(f"MISP: Found in {event_count} events — {malware_info}")
+                        results['riskReasons'].append({
+                            'category': 'MISP Intelligence',
+                            'description': f'Hash found in {event_count} MISP threat intel events',
+                            'severity': 'critical' if event_count >= 5 else 'high',
+                            'source': 'MISP',
+                            'score_contribution': min(40, event_count * 5)
                         })
 
             except Exception as e:
