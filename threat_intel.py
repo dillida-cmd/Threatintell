@@ -2164,7 +2164,14 @@ def investigate_ip(ip: str) -> Dict:
                         results['summary']['maliciousSources'] += 1
                         results['summary']['findings'].append(f"IPQualityScore: Fraud score {result.get('fraudScore')}")
                     elif service_name == 'alienvault_otx' and result.get('pulseCount', 0) > 0:
-                        results['summary']['findings'].append(f"AlienVault: {result.get('pulseCount')} threat pulses")
+                        pulse_count = result.get('pulseCount', 0)
+                        results['summary']['findings'].append(f"AlienVault: {pulse_count} threat pulses")
+                        if pulse_count >= 3:
+                            results['summary']['maliciousSources'] += 1
+                        results['summary']['riskScore'] = max(
+                            results['summary']['riskScore'],
+                            min(80, 20 + (pulse_count * 15))
+                        )
                     elif service_name == 'greynoise' and result.get('noise'):
                         results['summary']['findings'].append(f"GreyNoise: Known scanner ({result.get('classification')})")
                     elif service_name == 'threatfox' and result.get('found'):
@@ -2887,7 +2894,14 @@ def investigate_url(url: str) -> Dict:
                         results['summary']['maliciousSources'] += 1
                         results['summary']['findings'].append(f"URLhaus: {result.get('threat')}")
                     elif service_name == 'alienvault_otx' and result.get('pulseCount', 0) > 0:
-                        results['summary']['findings'].append(f"AlienVault: {result.get('pulseCount')} threat pulses")
+                        pulse_count = result.get('pulseCount', 0)
+                        results['summary']['findings'].append(f"AlienVault: {pulse_count} threat pulses")
+                        if pulse_count >= 3:
+                            results['summary']['maliciousSources'] += 1
+                        results['summary']['riskScore'] = max(
+                            results['summary']['riskScore'],
+                            min(80, 20 + (pulse_count * 15))
+                        )
                     elif service_name == 'misp' and result.get('found'):
                         results['summary']['maliciousSources'] += 1
                         results['summary']['findings'].append(f"MISP: Found in {result.get('eventCount')} threat intel events")
@@ -3115,6 +3129,12 @@ def investigate_hash(file_hash: str) -> Dict:
                     elif service_name == 'alienvault_otx' and result.get('pulseCount', 0) > 0:
                         pulse_count = result.get('pulseCount', 0)
                         results['summary']['findings'].append(f"AlienVault: {pulse_count} threat pulses")
+                        if pulse_count >= 3:
+                            results['summary']['maliciousSources'] += 1
+                        results['summary']['riskScore'] = max(
+                            results['summary']['riskScore'],
+                            min(80, 20 + (pulse_count * 15))
+                        )
                         # Add detailed risk reason
                         results['riskReasons'].append({
                             'category': 'Threat Intelligence',
