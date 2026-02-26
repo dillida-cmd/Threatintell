@@ -315,9 +315,26 @@ class AIRiskValidator:
                     analysis['factors']['positive'].append(f'AlienVault: {v.get("message", "Whitelisted")}')
                     analysis['falsePositiveIndicators'].append(v.get('message'))
 
-            if otx.get('pulseCount', 0) > 5:
+            pulse_count = otx.get('pulseCount', 0)
+            if pulse_count >= 3:
+                threat_sources += 2
+                analysis['factors']['negative'].append(f'AlienVault: {pulse_count} threat reports')
+                analysis['threatIndicators'].append({'source': 'AlienVault OTX', 'type': 'threat_pulses', 'severity': 'high'})
+            elif pulse_count > 0:
                 threat_sources += 1
-                analysis['factors']['negative'].append(f'AlienVault: {otx["pulseCount"]} threat reports')
+                analysis['factors']['negative'].append(f'AlienVault: {pulse_count} threat report(s)')
+
+        # Check MISP
+        if 'misp' in sources:
+            misp = sources['misp']
+            if misp.get('found'):
+                event_count = misp.get('eventCount', 0)
+                threat_sources += 2
+                analysis['factors']['negative'].append(f'MISP: Found in {event_count} threat intel event(s)')
+                analysis['threatIndicators'].append({'source': 'MISP', 'type': 'threat_intel', 'severity': 'high'})
+            else:
+                clean_sources += 1
+                analysis['factors']['positive'].append('MISP: Not in threat intelligence database')
 
         analysis = self._calculate_consensus_score(analysis, clean_sources, threat_sources, len(sources) + 2)
 
