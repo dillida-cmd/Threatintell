@@ -227,22 +227,7 @@ export default function AIValidation({ validation, compact = false }: AIValidati
             </div>
           )}
 
-          {/* Threat Indicators Detail */}
-          {validation.threatIndicators && validation.threatIndicators.length > 0 && (
-            <div>
-              <h4 className="text-sm font-semibold text-gray-300 mb-2">Confirmed Threat Indicators</h4>
-              <div className="flex flex-wrap gap-2">
-                {validation.threatIndicators.map((threat, i) => (
-                  <span
-                    key={i}
-                    className={`px-2 py-1 rounded text-xs border ${getSeverityBadge(threat.severity)}`}
-                  >
-                    {threat.source}: {threat.type}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* Threat Indicators Detail - removed per user request */}
 
           {/* Reasoning */}
           {validation.reasoning && validation.reasoning.length > 0 && (
