@@ -2720,6 +2720,15 @@ def _unwrap_url_for_investigation(url: str) -> dict:
     if not url:
         return result
 
+    # Ensure URL has a scheme
+    if not re.match(r'https?://', url, re.I):
+        url = 'https://' + url
+
+    def _ensure_scheme(u):
+        if u and not re.match(r'https?://', u, re.I):
+            return 'https://' + u
+        return u
+
     try:
         parsed = urlparse(url)
         host = (parsed.netloc or '').lower()
@@ -2731,7 +2740,7 @@ def _unwrap_url_for_investigation(url: str) -> dict:
     if 'safelinks.protection.outlook.com' in host:
         raw = qp.get('url', [None])[0]
         if raw:
-            inner = unquote(raw)
+            inner = _ensure_scheme(unquote(raw))
             child = _unwrap_url_for_investigation(inner)
             return {'original': url, 'unwrapped': child['unwrapped'],
                     'is_wrapped': True, 'wrapper': 'Microsoft Defender Safe Links'}
@@ -2740,7 +2749,7 @@ def _unwrap_url_for_investigation(url: str) -> dict:
     if 'urldefense.proofpoint.com' in host:
         raw = qp.get('u', [None])[0]
         if raw:
-            inner = unquote(raw.replace('-', '%').replace('_', '/'))
+            inner = _ensure_scheme(unquote(raw.replace('-', '%').replace('_', '/')))
             child = _unwrap_url_for_investigation(inner)
             return {'original': url, 'unwrapped': child['unwrapped'],
                     'is_wrapped': True, 'wrapper': 'Proofpoint URL Defense'}
@@ -2750,7 +2759,7 @@ def _unwrap_url_for_investigation(url: str) -> dict:
         import re as _re
         m = _re.search(r'__(.+?)(?:__|;)', parsed.path)
         if m:
-            inner = unquote(m.group(1))
+            inner = _ensure_scheme(unquote(m.group(1)))
             child = _unwrap_url_for_investigation(inner)
             return {'original': url, 'unwrapped': child['unwrapped'],
                     'is_wrapped': True, 'wrapper': 'Proofpoint URL Defense v3'}
@@ -2759,7 +2768,7 @@ def _unwrap_url_for_investigation(url: str) -> dict:
     if 'google.com' in host and '/url' in parsed.path:
         raw = qp.get('q', [None])[0] or qp.get('url', [None])[0]
         if raw:
-            inner = unquote(raw)
+            inner = _ensure_scheme(unquote(raw))
             child = _unwrap_url_for_investigation(inner)
             return {'original': url, 'unwrapped': child['unwrapped'],
                     'is_wrapped': True, 'wrapper': 'Google Redirect'}
@@ -2768,7 +2777,7 @@ def _unwrap_url_for_investigation(url: str) -> dict:
     if 'linkprotect.cudasvc.com' in host:
         raw = qp.get('a', [None])[0]
         if raw:
-            inner = unquote(raw)
+            inner = _ensure_scheme(unquote(raw))
             child = _unwrap_url_for_investigation(inner)
             return {'original': url, 'unwrapped': child['unwrapped'],
                     'is_wrapped': True, 'wrapper': 'Barracuda ESS'}
@@ -2777,9 +2786,7 @@ def _unwrap_url_for_investigation(url: str) -> dict:
     if re.match(r'protect-[a-z]+\.mimecast\.com', host):
         raw = qp.get('d', [None])[0] or qp.get('domain', [None])[0]
         if raw:
-            inner = unquote(raw)
-            if not inner.startswith('http'):
-                inner = 'https://' + inner
+            inner = _ensure_scheme(unquote(raw))
             child = _unwrap_url_for_investigation(inner)
             return {'original': url, 'unwrapped': child['unwrapped'],
                     'is_wrapped': True, 'wrapper': 'Mimecast'}
@@ -2788,11 +2795,10 @@ def _unwrap_url_for_investigation(url: str) -> dict:
     if 'secure-web.cisco.com' in host:
         parts = parsed.path.strip('/').split('/', 1)
         if len(parts) == 2:
-            inner = unquote(parts[1])
-            if inner.startswith('http'):
-                child = _unwrap_url_for_investigation(inner)
-                return {'original': url, 'unwrapped': child['unwrapped'],
-                        'is_wrapped': True, 'wrapper': 'Cisco Secure Email'}
+            inner = _ensure_scheme(unquote(parts[1]))
+            child = _unwrap_url_for_investigation(inner)
+            return {'original': url, 'unwrapped': child['unwrapped'],
+                    'is_wrapped': True, 'wrapper': 'Cisco Secure Email'}
 
     # Generic fallback: check common redirect param names
     for pname in ('url', 'redirect', 'target', 'dest', 'destination', 'goto', 'link'):

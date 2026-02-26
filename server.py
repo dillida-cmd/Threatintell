@@ -273,6 +273,11 @@ def unwrap_url(url: str, _depth: int = 0) -> dict:
     if not url or _depth >= MAX_DEPTH:
         return result
 
+    # Ensure URL has a scheme — without it urlparse can't extract netloc
+    if not re.match(r'https?://', url, re.I):
+        url = 'https://' + url
+        result['original_url'] = url
+
     try:
         parsed = urlparse(url)
         host = (parsed.netloc or '').lower()
@@ -280,11 +285,17 @@ def unwrap_url(url: str, _depth: int = 0) -> dict:
     except Exception:
         return result
 
+    def _ensure_scheme(u):
+        """Make sure unwrapped URL has https:// prefix."""
+        if u and not re.match(r'https?://', u, re.I):
+            return 'https://' + u
+        return u
+
     # --- Microsoft Defender Safe Links ---
     if 'safelinks.protection.outlook.com' in host:
         raw = query_params.get('url', [None])[0]
         if raw:
-            inner = unquote(raw)
+            inner = _ensure_scheme(unquote(raw))
             result['is_wrapped'] = True
             result['wrapper_service'] = 'Microsoft Defender Safe Links'
             result['redirect_chain'].append(url)
@@ -300,7 +311,7 @@ def unwrap_url(url: str, _depth: int = 0) -> dict:
         if raw:
             # Proofpoint v2 replaces - with %2d and _ with %2f in the URL
             inner = raw.replace('-', '%').replace('_', '/')
-            inner = unquote(inner)
+            inner = _ensure_scheme(unquote(inner))
             result['is_wrapped'] = True
             result['wrapper_service'] = 'Proofpoint URL Defense'
             result['redirect_chain'].append(url)
@@ -315,7 +326,7 @@ def unwrap_url(url: str, _depth: int = 0) -> dict:
         path = parsed.path
         m = re.search(r'__(.+?)(?:__|;)', path)
         if m:
-            inner = unquote(m.group(1))
+            inner = _ensure_scheme(unquote(m.group(1)))
             result['is_wrapped'] = True
             result['wrapper_service'] = 'Proofpoint URL Defense v3'
             result['redirect_chain'].append(url)
@@ -328,7 +339,7 @@ def unwrap_url(url: str, _depth: int = 0) -> dict:
     if 'google.com' in host and '/url' in parsed.path:
         raw = query_params.get('q', [None])[0] or query_params.get('url', [None])[0]
         if raw:
-            inner = unquote(raw)
+            inner = _ensure_scheme(unquote(raw))
             result['is_wrapped'] = True
             result['wrapper_service'] = 'Google Redirect'
             result['redirect_chain'].append(url)
@@ -341,7 +352,7 @@ def unwrap_url(url: str, _depth: int = 0) -> dict:
     if 'linkprotect.cudasvc.com' in host:
         raw = query_params.get('a', [None])[0]
         if raw:
-            inner = unquote(raw)
+            inner = _ensure_scheme(unquote(raw))
             result['is_wrapped'] = True
             result['wrapper_service'] = 'Barracuda ESS'
             result['redirect_chain'].append(url)
@@ -354,9 +365,7 @@ def unwrap_url(url: str, _depth: int = 0) -> dict:
     if re.search(r'protect-[a-z]+\.mimecast\.com', host):
         raw = query_params.get('d', [None])[0] or query_params.get('domain', [None])[0]
         if raw:
-            inner = unquote(raw)
-            if not inner.startswith('http'):
-                inner = 'https://' + inner
+            inner = _ensure_scheme(unquote(raw))
             result['is_wrapped'] = True
             result['wrapper_service'] = 'Mimecast'
             result['redirect_chain'].append(url)
@@ -370,28 +379,30 @@ def unwrap_url(url: str, _depth: int = 0) -> dict:
         # Format: https://secure-web.cisco.com/<hash>/https%3A%2F%2Fevil.com
         path_parts = parsed.path.strip('/').split('/', 1)
         if len(path_parts) == 2:
-            inner = unquote(path_parts[1])
-            if inner.startswith('http'):
-                result['is_wrapped'] = True
-                result['wrapper_service'] = 'Cisco Secure Email'
-                result['redirect_chain'].append(url)
-                child = unwrap_url(inner, _depth + 1)
-                result['unwrapped_url'] = child['unwrapped_url']
-                result['redirect_chain'] += child.get('redirect_chain', [inner])
-                return result
-
-    # --- Generic: check for common query param names holding URLs ---
-    for param_name in ('url', 'redirect', 'target', 'dest', 'destination', 'goto', 'link', 'ref'):
-        raw = query_params.get(param_name, [None])[0]
-        if raw and re.match(r'https?://', unquote(raw), re.I):
-            inner = unquote(raw)
+            inner = _ensure_scheme(unquote(path_parts[1]))
             result['is_wrapped'] = True
-            result['wrapper_service'] = f'URL redirect ({host})'
+            result['wrapper_service'] = 'Cisco Secure Email'
             result['redirect_chain'].append(url)
             child = unwrap_url(inner, _depth + 1)
             result['unwrapped_url'] = child['unwrapped_url']
             result['redirect_chain'] += child.get('redirect_chain', [inner])
             return result
+
+    # --- Generic: check for common query param names holding URLs ---
+    for param_name in ('url', 'redirect', 'target', 'dest', 'destination', 'goto', 'link', 'ref'):
+        raw = query_params.get(param_name, [None])[0]
+        if raw:
+            decoded = unquote(raw)
+            inner = _ensure_scheme(decoded)
+            # Only treat as wrapped if the inner value looks like a domain/URL
+            if '.' in urlparse(inner).netloc:
+                result['is_wrapped'] = True
+                result['wrapper_service'] = f'URL redirect ({host})'
+                result['redirect_chain'].append(url)
+                child = unwrap_url(inner, _depth + 1)
+                result['unwrapped_url'] = child['unwrapped_url']
+                result['redirect_chain'] += child.get('redirect_chain', [inner])
+                return result
 
     return result
 
