@@ -3261,6 +3261,8 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
             self.handle_url_investigation()
         elif self.path == '/api/threat-intel/investigate/hash':
             self.handle_hash_investigation()
+        elif self.path == '/api/threat-intel/correlation-graph':
+            self.handle_correlation_graph()
         elif self.path == '/api/threat-intel/cache/clear':
             self.handle_cache_clear()
         elif self.path == '/api/threat-intel/cache/cleanup':
@@ -3406,6 +3408,18 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                         result['summary']['aiConfidence'] = ai_analysis.get('confidence', 0)
                         result['summary']['aiRecommendation'] = ai_analysis.get('recommendation', '')
 
+                # Generate correlation graph for IP
+                if AI_FLOW_AVAILABLE:
+                    try:
+                        corr_graph = ai_flow_analyzer.generate_correlation_graph('ip', ip, result)
+                        if corr_graph.get('correlationEdges'):
+                            if 'attackFlow' not in result:
+                                result['attackFlow'] = corr_graph
+                            else:
+                                result['attackFlow']['correlationEdges'] = corr_graph.get('correlationEdges', [])
+                    except Exception as e:
+                        print(f"[Warning] IP correlation graph failed: {e}")
+
                 self.send_json(result)
             else:
                 self.send_json({'error': 'Threat intelligence module not available'}, 503)
@@ -3477,6 +3491,11 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                     try:
                         flow_analysis = ai_flow_analyzer.analyze_url_flow(result)
                         result['attackFlow'] = flow_analysis
+
+                        # Inject correlation edges
+                        corr_graph = ai_flow_analyzer.generate_correlation_graph('url', normalized_url, result)
+                        if corr_graph.get('correlationEdges'):
+                            result['attackFlow']['correlationEdges'] = corr_graph.get('correlationEdges', [])
                     except Exception as e:
                         print(f"[Warning] URL flow analysis failed: {e}")
 
@@ -3517,6 +3536,34 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                 self.send_json(result)
             else:
                 self.send_json({'error': 'Threat intelligence module not available'}, 503)
+
+        except json.JSONDecodeError:
+            self.send_json({'error': 'Invalid JSON'}, 400)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_correlation_graph(self):
+        """Handle POST /api/threat-intel/correlation-graph - generate IOC correlation graph"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            ioc_type = data.get('type')
+            ioc_value = data.get('value')
+            if not ioc_type or not ioc_value:
+                self.send_json({'error': 'type and value are required'}, 400)
+                return
+
+            if ioc_type not in ('ip', 'url', 'hash'):
+                self.send_json({'error': 'type must be ip, url, or hash'}, 400)
+                return
+
+            if AI_FLOW_AVAILABLE:
+                graph = ai_flow_analyzer.generate_correlation_graph(ioc_type, ioc_value)
+                self.send_json(graph)
+            else:
+                self.send_json({'error': 'AI flow analyzer not available'}, 503)
 
         except json.JSONDecodeError:
             self.send_json({'error': 'Invalid JSON'}, 400)
