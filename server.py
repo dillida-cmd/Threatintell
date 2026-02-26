@@ -17,7 +17,7 @@ import threading
 from email import policy
 from email.parser import BytesParser
 from datetime import datetime, timedelta
-from urllib.parse import urlparse, unquote, urlunparse, quote
+from urllib.parse import urlparse, unquote, urlunparse, quote, parse_qs
 
 # Import threat intelligence module
 try:
@@ -214,6 +214,219 @@ def normalize_url_for_api(url: str) -> str:
     except Exception:
         # If normalization fails, return original URL
         return url
+
+
+# ============================================================================
+# URL Unwrapping — Defender Safe Links, Proofpoint, Google Redirects, etc.
+# ============================================================================
+
+# Patterns that identify URL-wrapping/redirection services.
+# Each entry: (compiled regex matching the wrapper domain, name of query param
+# holding the real URL, whether the param value is base64-encoded).
+_URL_WRAPPER_PATTERNS = [
+    # Microsoft Defender Safe Links
+    # e.g. https://nam02.safelinks.protection.outlook.com/?url=https%3A%2F%2Fevil.com&data=...
+    (re.compile(r'safelinks\.protection\.outlook\.com', re.I), 'url', False),
+    # Proofpoint URL Defense v2  (urldefense.proofpoint.com/v2/url?u=...)
+    (re.compile(r'urldefense\.proofpoint\.com', re.I), 'u', False),
+    # Proofpoint URL Defense v3  (urldefense.com/v3/__https://evil.com__)
+    (re.compile(r'urldefense\.com', re.I), None, False),  # handled specially
+    # Google redirect
+    (re.compile(r'www\.google\.com/url', re.I), 'q', False),
+    (re.compile(r'www\.google\.com/url', re.I), 'url', False),
+    # Barracuda ESS
+    (re.compile(r'linkprotect\.cudasvc\.com', re.I), 'a', False),
+    # Mimecast
+    (re.compile(r'protect-[a-z]+\.mimecast\.com', re.I), None, False),  # URL in path
+    # Cisco Secure Email (formerly IronPort)
+    (re.compile(r'secure-web\.cisco\.com', re.I), None, False),
+    # FireEye / Trellix URL click protection
+    (re.compile(r'fireeye\.com/.*url=', re.I), 'url', False),
+]
+
+
+def unwrap_url(url: str, _depth: int = 0) -> dict:
+    """
+    Detect if *url* is a wrapped/redirected URL from a security gateway
+    (Microsoft Defender Safe Links, Proofpoint, Google, Barracuda, etc.)
+    and extract the real destination URL.
+
+    Returns a dict:
+        {
+            'original_url': <the input>,
+            'unwrapped_url': <real destination or same as input>,
+            'is_wrapped': True/False,
+            'wrapper_service': 'Microsoft Defender Safe Links' | ... | None,
+            'redirect_chain': [url1, url2, ...]   # if multiple layers
+        }
+    Recursively unwraps up to 5 layers (wrappers can nest).
+    """
+    MAX_DEPTH = 5
+    result = {
+        'original_url': url,
+        'unwrapped_url': url,
+        'is_wrapped': False,
+        'wrapper_service': None,
+        'redirect_chain': [],
+    }
+
+    if not url or _depth >= MAX_DEPTH:
+        return result
+
+    try:
+        parsed = urlparse(url)
+        host = (parsed.netloc or '').lower()
+        query_params = parse_qs(parsed.query)
+    except Exception:
+        return result
+
+    # --- Microsoft Defender Safe Links ---
+    if 'safelinks.protection.outlook.com' in host:
+        raw = query_params.get('url', [None])[0]
+        if raw:
+            inner = unquote(raw)
+            result['is_wrapped'] = True
+            result['wrapper_service'] = 'Microsoft Defender Safe Links'
+            result['redirect_chain'].append(url)
+            # Recurse in case the inner URL is also wrapped
+            child = unwrap_url(inner, _depth + 1)
+            result['unwrapped_url'] = child['unwrapped_url']
+            result['redirect_chain'] += child.get('redirect_chain', [inner])
+            return result
+
+    # --- Proofpoint URL Defense v2 ---
+    if 'urldefense.proofpoint.com' in host:
+        raw = query_params.get('u', [None])[0]
+        if raw:
+            # Proofpoint v2 replaces - with %2d and _ with %2f in the URL
+            inner = raw.replace('-', '%').replace('_', '/')
+            inner = unquote(inner)
+            result['is_wrapped'] = True
+            result['wrapper_service'] = 'Proofpoint URL Defense'
+            result['redirect_chain'].append(url)
+            child = unwrap_url(inner, _depth + 1)
+            result['unwrapped_url'] = child['unwrapped_url']
+            result['redirect_chain'] += child.get('redirect_chain', [inner])
+            return result
+
+    # --- Proofpoint URL Defense v3 ---
+    if 'urldefense.com' in host:
+        # v3 format: /v3/__https://evil.com__;...
+        path = parsed.path
+        m = re.search(r'__(.+?)(?:__|;)', path)
+        if m:
+            inner = unquote(m.group(1))
+            result['is_wrapped'] = True
+            result['wrapper_service'] = 'Proofpoint URL Defense v3'
+            result['redirect_chain'].append(url)
+            child = unwrap_url(inner, _depth + 1)
+            result['unwrapped_url'] = child['unwrapped_url']
+            result['redirect_chain'] += child.get('redirect_chain', [inner])
+            return result
+
+    # --- Google Redirect ---
+    if 'google.com' in host and '/url' in parsed.path:
+        raw = query_params.get('q', [None])[0] or query_params.get('url', [None])[0]
+        if raw:
+            inner = unquote(raw)
+            result['is_wrapped'] = True
+            result['wrapper_service'] = 'Google Redirect'
+            result['redirect_chain'].append(url)
+            child = unwrap_url(inner, _depth + 1)
+            result['unwrapped_url'] = child['unwrapped_url']
+            result['redirect_chain'] += child.get('redirect_chain', [inner])
+            return result
+
+    # --- Barracuda ESS ---
+    if 'linkprotect.cudasvc.com' in host:
+        raw = query_params.get('a', [None])[0]
+        if raw:
+            inner = unquote(raw)
+            result['is_wrapped'] = True
+            result['wrapper_service'] = 'Barracuda ESS'
+            result['redirect_chain'].append(url)
+            child = unwrap_url(inner, _depth + 1)
+            result['unwrapped_url'] = child['unwrapped_url']
+            result['redirect_chain'] += child.get('redirect_chain', [inner])
+            return result
+
+    # --- Mimecast ---
+    if re.search(r'protect-[a-z]+\.mimecast\.com', host):
+        raw = query_params.get('d', [None])[0] or query_params.get('domain', [None])[0]
+        if raw:
+            inner = unquote(raw)
+            if not inner.startswith('http'):
+                inner = 'https://' + inner
+            result['is_wrapped'] = True
+            result['wrapper_service'] = 'Mimecast'
+            result['redirect_chain'].append(url)
+            child = unwrap_url(inner, _depth + 1)
+            result['unwrapped_url'] = child['unwrapped_url']
+            result['redirect_chain'] += child.get('redirect_chain', [inner])
+            return result
+
+    # --- Cisco Secure Email (IronPort) ---
+    if 'secure-web.cisco.com' in host:
+        # Format: https://secure-web.cisco.com/<hash>/https%3A%2F%2Fevil.com
+        path_parts = parsed.path.strip('/').split('/', 1)
+        if len(path_parts) == 2:
+            inner = unquote(path_parts[1])
+            if inner.startswith('http'):
+                result['is_wrapped'] = True
+                result['wrapper_service'] = 'Cisco Secure Email'
+                result['redirect_chain'].append(url)
+                child = unwrap_url(inner, _depth + 1)
+                result['unwrapped_url'] = child['unwrapped_url']
+                result['redirect_chain'] += child.get('redirect_chain', [inner])
+                return result
+
+    # --- Generic: check for common query param names holding URLs ---
+    for param_name in ('url', 'redirect', 'target', 'dest', 'destination', 'goto', 'link', 'ref'):
+        raw = query_params.get(param_name, [None])[0]
+        if raw and re.match(r'https?://', unquote(raw), re.I):
+            inner = unquote(raw)
+            result['is_wrapped'] = True
+            result['wrapper_service'] = f'URL redirect ({host})'
+            result['redirect_chain'].append(url)
+            child = unwrap_url(inner, _depth + 1)
+            result['unwrapped_url'] = child['unwrapped_url']
+            result['redirect_chain'] += child.get('redirect_chain', [inner])
+            return result
+
+    return result
+
+
+def unwrap_urls_in_list(urls: list) -> list:
+    """
+    Given a list of URLs, unwrap any that are wrapped by known security
+    gateways.  Returns a new list where wrapped URLs are replaced by
+    their real destinations, plus the wrappers are kept for reference.
+    Also returns unwrap metadata.
+    """
+    unwrapped = []
+    seen = set()
+    unwrap_info = []
+
+    for url in urls:
+        info = unwrap_url(url)
+        real = info['unwrapped_url']
+
+        if info['is_wrapped']:
+            unwrap_info.append(info)
+            # Add the real URL (replaces the wrapper)
+            if real not in seen:
+                seen.add(real)
+                unwrapped.append(real)
+            # Also keep the original wrapper for the record
+            if url not in seen:
+                seen.add(url)
+                unwrapped.append(url)
+        else:
+            if url not in seen:
+                seen.add(url)
+                unwrapped.append(url)
+
+    return unwrapped, unwrap_info
 
 
 # ============================================================================
@@ -1796,7 +2009,9 @@ def parse_authentication_results(msg):
 
 
 def extract_urls_from_email(msg):
-    """Extract URLs from email body (text and HTML)"""
+    """Extract URLs from email body (text and HTML).
+    Automatically unwraps Defender Safe Links, Proofpoint, and other
+    security-gateway wrapped URLs so the real destination is analysed."""
     urls = []
     url_pattern = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
 
@@ -1832,7 +2047,33 @@ def extract_urls_from_email(msg):
             seen.add(url)
             unique_urls.append(url)
 
-    return unique_urls
+    # Unwrap any security-gateway wrapped URLs (Safe Links, Proofpoint, etc.)
+    # so we analyse the actual phishing destination, not the wrapper.
+    final_urls = []
+    seen_final = set()
+    unwrap_metadata = []
+    for url in unique_urls:
+        info = unwrap_url(url)
+        real_url = info['unwrapped_url']
+        if info['is_wrapped']:
+            unwrap_metadata.append(info)
+            # Add the real destination URL first (higher priority)
+            if real_url not in seen_final:
+                seen_final.add(real_url)
+                final_urls.append(real_url)
+            # Keep the wrapper URL too for reference
+            if url not in seen_final:
+                seen_final.add(url)
+                final_urls.append(url)
+        else:
+            if url not in seen_final:
+                seen_final.add(url)
+                final_urls.append(url)
+
+    # Attach unwrap metadata to the function (accessible via attribute)
+    extract_urls_from_email._last_unwrap_info = unwrap_metadata
+
+    return final_urls
 
 
 def extract_attachments(msg):
@@ -1884,6 +2125,35 @@ def detect_phishing(msg, headers, urls, attachments, auth_results):
     """Detect phishing indicators in email"""
     indicators = []
 
+    # ── Unwrap security-gateway URLs so checks run against real destinations ──
+    unwrapped_urls = []
+    wrapped_count = 0
+    for url in urls:
+        info = unwrap_url(url)
+        if info['is_wrapped']:
+            wrapped_count += 1
+            unwrapped_urls.append(info['unwrapped_url'])
+            indicators.append({
+                'type': 'wrapped_url',
+                'severity': 'medium',
+                'description': (
+                    f"URL wrapped by {info['wrapper_service']}: "
+                    f"actual destination is {info['unwrapped_url'][:80]}"
+                )
+            })
+        else:
+            unwrapped_urls.append(url)
+
+    if wrapped_count:
+        indicators.append({
+            'type': 'url_gateway_wrap',
+            'severity': 'info',
+            'description': f'{wrapped_count} URL(s) were wrapped by security gateways — unwrapped for analysis'
+        })
+
+    # Use unwrapped URLs for all subsequent checks
+    urls = unwrapped_urls
+
     # Check for failed authentication
     if auth_results['spf']['status'] in ('fail', 'softfail'):
         indicators.append({
@@ -1913,17 +2183,26 @@ def detect_phishing(msg, headers, urls, attachments, auth_results):
         for match in link_pattern.finditer(body_html):
             href = match.group(1)
             display_text = match.group(2).strip()
+            # Unwrap href if it's a Safe Links / gateway URL
+            href_info = unwrap_url(href)
+            actual_href = href_info['unwrapped_url']
             # Check if display text looks like a URL but differs from href
             if re.match(r'https?://', display_text, re.IGNORECASE):
-                if href.split('/')[2] != display_text.split('/')[2]:
+                try:
+                    href_domain = urlparse(actual_href).netloc.lower()
+                    display_domain = urlparse(display_text).netloc.lower()
+                except Exception:
+                    href_domain = actual_href.split('/')[2] if len(actual_href.split('/')) > 2 else ''
+                    display_domain = display_text.split('/')[2] if len(display_text.split('/')) > 2 else ''
+                if href_domain != display_domain:
                     indicators.append({
                         'type': 'url_mismatch',
                         'severity': 'high',
-                        'description': f'Link display text ({display_text[:50]}) differs from actual URL domain'
+                        'description': f'Link display text ({display_text[:50]}) differs from actual URL domain ({href_domain})'
                     })
                     break  # One is enough
 
-    # Check for lookalike domains in URLs
+    # Check for lookalike domains in URLs (now checks unwrapped URLs)
     for url in urls[:20]:  # Check first 20 URLs
         for pattern, brand in LOOKALIKE_PATTERNS:
             if re.search(pattern, url, re.IGNORECASE) and brand not in url.lower():
@@ -3056,7 +3335,16 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                 self.send_json({'error': 'No IOCs provided. Include ips, urls, or hashes array.'}, 400)
                 return
 
-            result = investigate_iocs(ips=ips, urls=urls, hashes=hashes, max_per_type=max_per_type)
+            # Unwrap any security-gateway wrapped URLs before investigation
+            unwrapped_urls, unwrap_info = unwrap_urls_in_list(urls)
+
+            result = investigate_iocs(ips=ips, urls=unwrapped_urls, hashes=hashes, max_per_type=max_per_type)
+            if unwrap_info:
+                result['urlUnwrapInfo'] = [
+                    {'wrapperService': i['wrapper_service'], 'wrapperUrl': i['original_url'],
+                     'actualUrl': i['unwrapped_url']}
+                    for i in unwrap_info
+                ]
             self.send_json(result)
 
         except json.JSONDecodeError:
@@ -3110,13 +3398,35 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
                 self.send_json({'error': 'URL required'}, 400)
                 return
 
+            # --- Unwrap URL if wrapped by Defender Safe Links / Proofpoint / etc. ---
+            unwrap_result = unwrap_url(url)
+            target_url = unwrap_result['unwrapped_url']
+
             # Normalize URL to handle encoding issues
-            normalized_url = normalize_url_for_api(url)
+            normalized_url = normalize_url_for_api(target_url)
 
             if THREAT_INTEL_AVAILABLE:
+                # Investigate the REAL destination URL, not the wrapper
                 result = threat_intel.investigate_url(normalized_url)
-                # Include original URL if different from normalized
-                if normalized_url != url:
+
+                # Include unwrap metadata so the analyst sees what happened
+                if unwrap_result['is_wrapped']:
+                    result['urlUnwrap'] = {
+                        'wasWrapped': True,
+                        'wrapperService': unwrap_result['wrapper_service'],
+                        'wrapperUrl': url,
+                        'actualUrl': unwrap_result['unwrapped_url'],
+                        'redirectChain': unwrap_result['redirect_chain'],
+                    }
+                    result['originalUrl'] = url
+                    result['normalizedUrl'] = normalized_url
+                    # Add a finding about the unwrap
+                    if 'summary' in result:
+                        result['summary']['findings'].insert(0,
+                            f"URL was wrapped by {unwrap_result['wrapper_service']} — "
+                            f"unwrapped and scanned actual destination: {unwrap_result['unwrapped_url']}")
+                    print(f"[URL Unwrap] {unwrap_result['wrapper_service']}: {url[:80]}... → {unwrap_result['unwrapped_url']}")
+                elif normalized_url != url:
                     result['originalUrl'] = url
                     result['normalizedUrl'] = normalized_url
 

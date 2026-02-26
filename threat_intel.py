@@ -2441,13 +2441,119 @@ def lookup_whois(domain: str) -> Dict:
         return {'error': str(e)}
 
 
-def investigate_url(url: str) -> Dict:
-    """Investigate a URL across all enabled services including DNS intelligence"""
-    from urllib.parse import urlparse
+def _unwrap_url_for_investigation(url: str) -> dict:
+    """
+    Detect and unwrap security-gateway wrapped URLs (Defender Safe Links,
+    Proofpoint, Google redirect, Barracuda, Mimecast, Cisco).
+    Returns {'original': ..., 'unwrapped': ..., 'is_wrapped': bool,
+             'wrapper': service_name | None}.
+    """
+    from urllib.parse import urlparse, parse_qs, unquote
 
-    # Extract domain from URL
+    result = {'original': url, 'unwrapped': url, 'is_wrapped': False, 'wrapper': None}
+    if not url:
+        return result
+
     try:
         parsed = urlparse(url)
+        host = (parsed.netloc or '').lower()
+        qp = parse_qs(parsed.query)
+    except Exception:
+        return result
+
+    # Microsoft Defender Safe Links
+    if 'safelinks.protection.outlook.com' in host:
+        raw = qp.get('url', [None])[0]
+        if raw:
+            inner = unquote(raw)
+            child = _unwrap_url_for_investigation(inner)
+            return {'original': url, 'unwrapped': child['unwrapped'],
+                    'is_wrapped': True, 'wrapper': 'Microsoft Defender Safe Links'}
+
+    # Proofpoint URL Defense v2
+    if 'urldefense.proofpoint.com' in host:
+        raw = qp.get('u', [None])[0]
+        if raw:
+            inner = unquote(raw.replace('-', '%').replace('_', '/'))
+            child = _unwrap_url_for_investigation(inner)
+            return {'original': url, 'unwrapped': child['unwrapped'],
+                    'is_wrapped': True, 'wrapper': 'Proofpoint URL Defense'}
+
+    # Proofpoint URL Defense v3
+    if 'urldefense.com' in host:
+        import re as _re
+        m = _re.search(r'__(.+?)(?:__|;)', parsed.path)
+        if m:
+            inner = unquote(m.group(1))
+            child = _unwrap_url_for_investigation(inner)
+            return {'original': url, 'unwrapped': child['unwrapped'],
+                    'is_wrapped': True, 'wrapper': 'Proofpoint URL Defense v3'}
+
+    # Google redirect
+    if 'google.com' in host and '/url' in parsed.path:
+        raw = qp.get('q', [None])[0] or qp.get('url', [None])[0]
+        if raw:
+            inner = unquote(raw)
+            child = _unwrap_url_for_investigation(inner)
+            return {'original': url, 'unwrapped': child['unwrapped'],
+                    'is_wrapped': True, 'wrapper': 'Google Redirect'}
+
+    # Barracuda ESS
+    if 'linkprotect.cudasvc.com' in host:
+        raw = qp.get('a', [None])[0]
+        if raw:
+            inner = unquote(raw)
+            child = _unwrap_url_for_investigation(inner)
+            return {'original': url, 'unwrapped': child['unwrapped'],
+                    'is_wrapped': True, 'wrapper': 'Barracuda ESS'}
+
+    # Mimecast
+    if re.match(r'protect-[a-z]+\.mimecast\.com', host):
+        raw = qp.get('d', [None])[0] or qp.get('domain', [None])[0]
+        if raw:
+            inner = unquote(raw)
+            if not inner.startswith('http'):
+                inner = 'https://' + inner
+            child = _unwrap_url_for_investigation(inner)
+            return {'original': url, 'unwrapped': child['unwrapped'],
+                    'is_wrapped': True, 'wrapper': 'Mimecast'}
+
+    # Cisco Secure Email
+    if 'secure-web.cisco.com' in host:
+        parts = parsed.path.strip('/').split('/', 1)
+        if len(parts) == 2:
+            inner = unquote(parts[1])
+            if inner.startswith('http'):
+                child = _unwrap_url_for_investigation(inner)
+                return {'original': url, 'unwrapped': child['unwrapped'],
+                        'is_wrapped': True, 'wrapper': 'Cisco Secure Email'}
+
+    # Generic fallback: check common redirect param names
+    for pname in ('url', 'redirect', 'target', 'dest', 'destination', 'goto', 'link'):
+        raw = qp.get(pname, [None])[0]
+        if raw and re.match(r'https?://', unquote(raw), re.I):
+            inner = unquote(raw)
+            child = _unwrap_url_for_investigation(inner)
+            return {'original': url, 'unwrapped': child['unwrapped'],
+                    'is_wrapped': True, 'wrapper': f'URL redirect ({host})'}
+
+    return result
+
+
+def investigate_url(url: str) -> Dict:
+    """Investigate a URL across all enabled services including DNS intelligence.
+    Automatically unwraps Defender Safe Links, Proofpoint, and other
+    security-gateway wrapped URLs before scanning."""
+    from urllib.parse import urlparse
+
+    # ── Unwrap security-gateway URLs before investigation ──
+    unwrap_info = _unwrap_url_for_investigation(url)
+    target_url = unwrap_info['unwrapped']
+    was_wrapped = unwrap_info['is_wrapped']
+
+    # Extract domain from the REAL destination URL
+    try:
+        parsed = urlparse(target_url)
         domain = parsed.netloc
         # Remove port if present
         if ':' in domain:
@@ -2456,7 +2562,7 @@ def investigate_url(url: str) -> Dict:
         domain = None
 
     results = {
-        'url': url,
+        'url': target_url,
         'domain': domain,
         'investigatedAt': datetime.now().isoformat(),
         'sources': {},
@@ -2471,6 +2577,21 @@ def investigate_url(url: str) -> Dict:
         }
     }
 
+    # Include unwrap metadata if the URL was wrapped
+    if was_wrapped:
+        results['urlUnwrap'] = {
+            'wasWrapped': True,
+            'wrapperService': unwrap_info['wrapper'],
+            'wrapperUrl': unwrap_info['original'],
+            'actualUrl': target_url,
+        }
+        results['summary']['findings'].append(
+            f"URL was wrapped by {unwrap_info['wrapper']} — "
+            f"unwrapped and scanning actual destination: {target_url}"
+        )
+        print(f"[ThreatIntel] URL unwrapped: {unwrap_info['wrapper']}: "
+              f"{url[:60]}... → {target_url}")
+
     # Threat intelligence services
     services = [
         ('virustotal', check_virustotal_url),
@@ -2481,7 +2602,7 @@ def investigate_url(url: str) -> Dict:
     for service_name, check_func in services:
         if is_service_enabled(service_name) or service_name in ['urlhaus']:
             try:
-                result = check_func(url)
+                result = check_func(target_url)
                 if 'error' not in result:
                     results['sources'][service_name] = result
                     results['summary']['totalSources'] += 1
@@ -2542,10 +2663,13 @@ def investigate_url(url: str) -> Dict:
         results['summary']['riskScore'] = min(100, 40 + (results['summary']['maliciousSources'] * 25))
 
     # Generate AI-style verdict summary
-    results['summary']['verdict'] = _generate_url_verdict(url, results)
+    results['summary']['verdict'] = _generate_url_verdict(target_url, results)
 
     # Store in IOC table for SIEM export
-    store_url_ioc(url, results)
+    store_url_ioc(target_url, results)
+    # Also store the wrapper URL for cross-reference if it was wrapped
+    if was_wrapped:
+        store_url_ioc(url, results)
 
     return results
 

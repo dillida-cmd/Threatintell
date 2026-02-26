@@ -22,7 +22,7 @@ import math
 import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, unquote
 
 # PE analysis
 try:
@@ -349,6 +349,51 @@ class IOCCollector:
         self.mutex_names = set()
         self.dns_queries = set()
 
+    @staticmethod
+    def _unwrap_gateway_url(url: str) -> str:
+        """Unwrap Defender Safe Links, Proofpoint, and other gateway-wrapped URLs.
+        Returns the real destination URL or the original if not wrapped."""
+        try:
+            parsed = urlparse(url)
+            host = (parsed.netloc or '').lower()
+            qp = parse_qs(parsed.query)
+
+            # Microsoft Defender Safe Links
+            if 'safelinks.protection.outlook.com' in host:
+                raw = qp.get('url', [None])[0]
+                if raw:
+                    return IOCCollector._unwrap_gateway_url(unquote(raw))
+
+            # Proofpoint v2
+            if 'urldefense.proofpoint.com' in host:
+                raw = qp.get('u', [None])[0]
+                if raw:
+                    return IOCCollector._unwrap_gateway_url(
+                        unquote(raw.replace('-', '%').replace('_', '/')))
+
+            # Proofpoint v3
+            if 'urldefense.com' in host:
+                import re as _re
+                m = _re.search(r'__(.+?)(?:__|;)', parsed.path)
+                if m:
+                    return IOCCollector._unwrap_gateway_url(unquote(m.group(1)))
+
+            # Google redirect
+            if 'google.com' in host and '/url' in parsed.path:
+                raw = qp.get('q', [None])[0] or qp.get('url', [None])[0]
+                if raw:
+                    return IOCCollector._unwrap_gateway_url(unquote(raw))
+
+            # Barracuda ESS
+            if 'linkprotect.cudasvc.com' in host:
+                raw = qp.get('a', [None])[0]
+                if raw:
+                    return IOCCollector._unwrap_gateway_url(unquote(raw))
+
+        except Exception:
+            pass
+        return url
+
     def extract_from_text(self, text: str):
         """Extract IOCs from text content"""
         if not text:
@@ -360,9 +405,13 @@ class IOCCollector:
             if not match.startswith('0.') and not match.startswith('127.'):
                 self.ips.add(match)
 
-        # Extract URLs
+        # Extract URLs — unwrap security-gateway wrapped URLs
         for match in URL_PATTERN.findall(text):
-            self.urls.add(match)
+            real_url = self._unwrap_gateway_url(match)
+            self.urls.add(real_url)
+            # Also keep original wrapper if different (for reference)
+            if real_url != match:
+                self.urls.add(match)
 
         # Extract domains with improved filtering
         for match in DOMAIN_PATTERN.findall(text):
