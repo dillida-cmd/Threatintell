@@ -139,6 +139,15 @@ export default function UrlLookup() {
             <Search className="h-5 w-5" />
             <span>Investigate</span>
           </button>
+          {(url || threatResults || analysisResults || error || threatError || analysisError) && (
+            <button
+              onClick={() => { setUrl(''); setThreatResults(null); setAnalysisResults(null); setError(null); setThreatError(null); setAnalysisError(null); }}
+              className="btn btn-secondary"
+              title="Clear"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -188,6 +197,11 @@ export default function UrlLookup() {
                 )}
                 {threatResults?.sources?.urlhaus?.threat && (
                   <span className="badge badge-danger">{threatResults.sources.urlhaus.threat}</span>
+                )}
+                {threatResults?.aitmDetection?.detected && (
+                  <span className="bg-red-600/30 text-red-300 border border-red-500/50 animate-pulse px-2 py-1 rounded-full text-xs font-semibold">
+                    AITM SUSPECTED
+                  </span>
                 )}
               </div>
             </div>
@@ -246,6 +260,64 @@ function ThreatResultsBody({ results }: { results: any }) {
 
   return (
     <div className="space-y-6">
+      {/* AITM Phishing Detection Warning */}
+      {results.aitmDetection?.detected && (
+        <div className="card border border-red-500/50 bg-red-500/10 glow-red">
+          <div className="flex items-center gap-3 mb-4">
+            <AlertTriangle className="h-6 w-6 text-red-400 animate-pulse" />
+            <h3 className="text-lg font-bold text-red-300">Adversary-in-the-Middle (AITM) Phishing Detected</h3>
+            <span className="ml-auto bg-red-600/40 text-red-200 px-3 py-1 rounded-full text-xs font-bold uppercase">
+              {results.aitmDetection.severity}
+            </span>
+          </div>
+
+          {results.aitmDetection.platforms?.length > 0 && (
+            <div className="mb-3">
+              <span className="text-gray-400 text-sm">Suspected Platform(s): </span>
+              <span className="text-red-300 font-semibold">{results.aitmDetection.platforms.join(', ')}</span>
+            </div>
+          )}
+
+          <div className="mb-3 flex items-center gap-4">
+            <div className="text-sm">
+              <span className="text-gray-400">Confidence: </span>
+              <span className={`font-bold ${results.aitmDetection.confidence >= 75 ? 'text-red-400' : results.aitmDetection.confidence >= 50 ? 'text-orange-400' : 'text-yellow-400'}`}>
+                {results.aitmDetection.confidence}%
+              </span>
+            </div>
+            {results.aitmDetection.mitre?.length > 0 && (
+              <div className="text-sm">
+                <span className="text-gray-400">MITRE: </span>
+                {results.aitmDetection.mitre.map((id: string, i: number) => (
+                  <span key={i} className="bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded text-xs mr-1">{id}</span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {results.aitmDetection.indicators?.length > 0 && (
+            <div className="space-y-2 mb-4">
+              {results.aitmDetection.indicators.map((ind: any, i: number) => (
+                <div key={i} className="flex items-center gap-2 text-sm">
+                  <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
+                    ind.severity === 'critical' ? 'bg-red-600/30 text-red-300' :
+                    ind.severity === 'high' ? 'bg-orange-600/30 text-orange-300' :
+                    'bg-yellow-600/30 text-yellow-300'
+                  }`}>{ind.severity}</span>
+                  <span className="text-gray-300">{ind.detail}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {results.aitmDetection.recommendation && (
+            <p className="text-red-300/80 text-sm border-t border-red-500/20 pt-3 mt-3">
+              {results.aitmDetection.recommendation}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* AI Recommendation / Verdict */}
       {(recommendation || summary.verdict) && (
         <div className={`card ${
@@ -368,6 +440,63 @@ function ThreatResultsBody({ results }: { results: any }) {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* URLScan.io Results */}
+      {sources.urlscanio && !sources.urlscanio.error && (
+        <div className="card">
+          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <Search className="h-5 w-5 text-primary-500" />
+            URLScan.io
+          </h3>
+
+          <div className="grid grid-cols-3 gap-4 mb-4">
+            <div className="p-4 rounded-xl bg-dark-500 text-center">
+              <div className="text-3xl font-bold text-white">{sources.urlscanio.totalScans || 0}</div>
+              <div className="text-xs text-gray-400">Total Scans</div>
+            </div>
+            <div className={`p-4 rounded-xl text-center ${sources.urlscanio.maliciousScans > 0 ? 'bg-red-500/20' : 'bg-dark-500'}`}>
+              <div className={`text-3xl font-bold ${sources.urlscanio.maliciousScans > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                {sources.urlscanio.maliciousScans || 0}
+              </div>
+              <div className="text-xs text-gray-400">Malicious</div>
+            </div>
+            <div className="p-4 rounded-xl bg-dark-500 text-center">
+              <div className={`text-lg font-bold ${sources.urlscanio.isMalicious ? 'text-red-400' : 'text-green-400'}`}>
+                {sources.urlscanio.isMalicious ? 'Malicious' : 'Clean'}
+              </div>
+              <div className="text-xs text-gray-400">Verdict</div>
+            </div>
+          </div>
+
+          {sources.urlscanio.verdicts?.length > 0 && (
+            <div className="mb-3">
+              <span className="text-gray-400 text-sm">Verdicts: </span>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {sources.urlscanio.verdicts.map((v: string, i: number) => (
+                  <span key={i} className="badge badge-warning text-xs">{v}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {sources.urlscanio.pageInfo && Object.keys(sources.urlscanio.pageInfo).length > 0 && (
+            <div className="space-y-1 text-sm">
+              {sources.urlscanio.pageInfo.server && (
+                <div><span className="text-gray-400">Server: </span><span className="text-white">{sources.urlscanio.pageInfo.server}</span></div>
+              )}
+              {sources.urlscanio.pageInfo.ip && (
+                <div><span className="text-gray-400">IP: </span><span className="text-white">{sources.urlscanio.pageInfo.ip}</span></div>
+              )}
+              {sources.urlscanio.pageInfo.country && (
+                <div><span className="text-gray-400">Country: </span><span className="text-white">{sources.urlscanio.pageInfo.country}</span></div>
+              )}
+              {sources.urlscanio.pageInfo.title && (
+                <div><span className="text-gray-400">Page Title: </span><span className="text-white">{sources.urlscanio.pageInfo.title}</span></div>
+              )}
             </div>
           )}
         </div>

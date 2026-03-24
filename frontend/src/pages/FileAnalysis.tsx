@@ -1,7 +1,8 @@
 import { useState, useRef, lazy, Suspense } from 'react'
 import {
   Upload, FileSearch, Shield, AlertTriangle, Mail, FileText, Table,
-  QrCode, Terminal, Camera, Globe, Link, Code, Package, Download, Key, X, ZoomIn, Lock, Unlock
+  QrCode, Terminal, Camera, Globe, Link, Code, Package, Download, Key, X, ZoomIn, Lock, Unlock,
+  ArrowRight, Server, MapPin, ChevronDown, ChevronUp, ExternalLink
 } from 'lucide-react'
 import { analyzeFile } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
@@ -600,9 +601,18 @@ function EmailResultsView({ analysis, riskScore }: { analysis: any; riskScore: n
   const phishing = analysis.phishingIndicators || analysis.phishing_indicators || []
   const attachments = analysis.attachments || []
   const urls = analysis.urls || []
+  const enrichedUrls = analysis.enrichedUrls || []
   const auth = analysis.authentication || analysis.security_indicators || {}
   const summary = analysis.summary || {}
   const verdict = summary.verdict || analysis.verdict
+  const routingPath = analysis.routingPath || []
+  const routingIps = analysis.routingIps || []
+  const senderDomain = analysis.senderDomain || ''
+  const senderDomainInfo = analysis.senderDomainInfo || {}
+  const qrCodes = analysis.qrCodes || []
+  const iocInvestigation = analysis.iocInvestigation || null
+  const [showAllHeaders, setShowAllHeaders] = useState(false)
+  const [showRouting, setShowRouting] = useState(false)
 
   return (
     <div className="space-y-6">
@@ -621,6 +631,15 @@ function EmailResultsView({ analysis, riskScore }: { analysis: any; riskScore: n
             <InfoRow label="From" value={headers.from || analysis.from} />
             <InfoRow label="To" value={headers.to || analysis.to} />
             <InfoRow label="Date" value={headers.date || analysis.date} />
+            {headers.reply_to && (
+              <InfoRow label="Reply-To" value={headers.reply_to} />
+            )}
+            {headers.return_path && (
+              <InfoRow label="Return-Path" value={headers.return_path} />
+            )}
+            {headers.message_id && (
+              <InfoRow label="Message-ID" value={headers.message_id} />
+            )}
           </div>
 
           {/* AI Verdict */}
@@ -640,6 +659,117 @@ function EmailResultsView({ analysis, riskScore }: { analysis: any; riskScore: n
         </div>
       </div>
 
+      {/* Email Flow: Sender → Receiver */}
+      <div className="card">
+        <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+          <ArrowRight className="h-5 w-5 text-primary-500" />
+          Email Flow
+        </h3>
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Sender */}
+          <div className="p-3 rounded-lg bg-dark-500 border border-dark-400 flex-1 min-w-[200px]">
+            <div className="text-xs text-gray-400 mb-1">Sender</div>
+            <div className="text-white text-sm font-medium break-all">{headers.from || analysis.from || '-'}</div>
+            {senderDomain && (
+              <div className="text-xs text-gray-500 mt-1">Domain: {senderDomain}</div>
+            )}
+            {senderDomainInfo?.is_new_domain && (
+              <span className="text-xs bg-orange-500/20 text-orange-400 px-2 py-0.5 rounded mt-1 inline-block">New Domain</span>
+            )}
+            {senderDomainInfo?.registrar && (
+              <div className="text-xs text-gray-500 mt-1">Registrar: {senderDomainInfo.registrar}</div>
+            )}
+          </div>
+
+          {/* Arrow */}
+          <div className="flex flex-col items-center gap-1">
+            <ArrowRight className="h-6 w-6 text-primary-500" />
+            {routingIps.length > 0 && (
+              <span className="text-xs text-gray-500">{routingIps.length} hop{routingIps.length > 1 ? 's' : ''}</span>
+            )}
+          </div>
+
+          {/* Receiver */}
+          <div className="p-3 rounded-lg bg-dark-500 border border-dark-400 flex-1 min-w-[200px]">
+            <div className="text-xs text-gray-400 mb-1">Recipient</div>
+            <div className="text-white text-sm font-medium break-all">{headers.to || analysis.to || '-'}</div>
+            {headers.reply_to && headers.reply_to !== headers.from && (
+              <div className="mt-1">
+                <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded">Reply-To differs: {headers.reply_to}</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Routing IPs */}
+        {routingIps.length > 0 && (
+          <div className="mt-4">
+            <button
+              onClick={() => setShowRouting(!showRouting)}
+              className="flex items-center gap-2 text-sm text-gray-400 hover:text-white transition-colors"
+            >
+              {showRouting ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              <Server className="h-4 w-4" />
+              Routing Hops ({routingIps.length} IP{routingIps.length > 1 ? 's' : ''})
+            </button>
+            {showRouting && (
+              <div className="mt-3 space-y-2">
+                {routingIps.map((hop: any, i: number) => (
+                  <div key={i} className="flex items-center gap-3 p-3 bg-dark-500 rounded-lg">
+                    <div className="flex items-center gap-2 min-w-[120px]">
+                      <Server className="h-4 w-4 text-gray-500" />
+                      <span className="text-white font-mono text-sm">{hop.ip}</span>
+                    </div>
+                    {hop.info && (
+                      <div className="flex items-center gap-2 text-sm text-gray-400">
+                        {hop.info.country && (
+                          <span className="flex items-center gap-1">
+                            <MapPin className="h-3 w-3" />
+                            {hop.info.country}
+                          </span>
+                        )}
+                        {hop.info.org && <span>({hop.info.org})</span>}
+                        {hop.info.isp && <span className="text-gray-500">ISP: {hop.info.isp}</span>}
+                      </div>
+                    )}
+                    {hop.threat && hop.threat.abuseScore > 0 && (
+                      <span className={`ml-auto text-xs px-2 py-0.5 rounded ${
+                        hop.threat.abuseScore > 50 ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'
+                      }`}>
+                        Abuse: {hop.threat.abuseScore}%
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Raw Received Headers */}
+        {routingPath.length > 0 && (
+          <div className="mt-4">
+            <button
+              onClick={() => setShowAllHeaders(!showAllHeaders)}
+              className="flex items-center gap-2 text-sm text-gray-400 hover:text-white transition-colors"
+            >
+              {showAllHeaders ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              Raw Received Headers ({routingPath.length})
+            </button>
+            {showAllHeaders && (
+              <div className="mt-3 space-y-2 max-h-60 overflow-y-auto">
+                {routingPath.map((header: string, i: number) => (
+                  <div key={i} className="p-2 bg-dark-600 rounded text-xs font-mono text-gray-400 break-all">
+                    <span className="text-gray-500 mr-2">#{routingPath.length - i}</span>
+                    {header}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* AI Risk Validation */}
       {analysis.aiValidation && (
         <AIValidation validation={analysis.aiValidation} />
@@ -653,12 +783,31 @@ function EmailResultsView({ analysis, riskScore }: { analysis: any; riskScore: n
             Phishing Indicators ({phishing.length})
           </h3>
           <div className="space-y-2">
-            {phishing.map((indicator: any, i: number) => (
-              <div key={i} className="flex items-center gap-2 p-3 bg-red-500/10 rounded-lg text-red-400">
-                <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-                <span>{typeof indicator === 'string' ? indicator : indicator.description || indicator.reason}</span>
-              </div>
-            ))}
+            {phishing.map((indicator: any, i: number) => {
+              const severity = typeof indicator === 'object' ? indicator.severity : 'medium'
+              return (
+                <div key={i} className={`flex items-start gap-2 p-3 rounded-lg ${
+                  severity === 'high' ? 'bg-red-500/10 text-red-400' :
+                  severity === 'medium' ? 'bg-orange-500/10 text-orange-400' :
+                  'bg-yellow-500/10 text-yellow-400'
+                }`}>
+                  <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <span>{typeof indicator === 'string' ? indicator : indicator.description || indicator.reason}</span>
+                    {typeof indicator === 'object' && indicator.type && (
+                      <span className="ml-2 text-xs bg-dark-500 px-2 py-0.5 rounded text-gray-400">{indicator.type}</span>
+                    )}
+                  </div>
+                  {severity && (
+                    <span className={`text-xs px-2 py-0.5 rounded flex-shrink-0 ${
+                      severity === 'high' ? 'bg-red-600/30 text-red-300' :
+                      severity === 'medium' ? 'bg-orange-600/30 text-orange-300' :
+                      'bg-yellow-600/30 text-yellow-300'
+                    }`}>{severity}</span>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
@@ -670,17 +819,142 @@ function EmailResultsView({ analysis, riskScore }: { analysis: any; riskScore: n
             <Shield className="h-5 w-5 text-primary-500" />
             Email Authentication
           </h3>
-          <div className="flex gap-4">
+          <div className="grid grid-cols-3 gap-4">
             {['spf', 'dkim', 'dmarc'].map((check) => {
-              const value = typeof auth[check] === 'string' ? auth[check] : auth[check]?.result || auth[check]?.status || '-'
+              const checkData = typeof auth[check] === 'object' ? auth[check] : { status: auth[check] }
+              const value = checkData?.result || checkData?.status || '-'
               const pass = value.toLowerCase().includes('pass')
+              const fail = value.toLowerCase().includes('fail')
               return (
-                <div key={check} className={`flex-1 p-4 rounded-lg ${pass ? 'bg-green-500/10' : 'bg-red-500/10'}`}>
-                  <span className="text-gray-400 text-xs uppercase">{check}</span>
-                  <p className={`font-semibold ${pass ? 'text-green-400' : 'text-red-400'}`}>{value}</p>
+                <div key={check} className={`p-4 rounded-lg ${pass ? 'bg-green-500/10 border border-green-500/20' : fail ? 'bg-red-500/10 border border-red-500/20' : 'bg-dark-500 border border-dark-400'}`}>
+                  <span className="text-gray-400 text-xs uppercase font-semibold">{check}</span>
+                  <p className={`font-bold text-lg ${pass ? 'text-green-400' : fail ? 'text-red-400' : 'text-gray-400'}`}>{value}</p>
+                  {checkData?.details && (
+                    <p className="text-xs text-gray-500 mt-1 break-all line-clamp-2">{checkData.details}</p>
+                  )}
                 </div>
               )
             })}
+          </div>
+        </div>
+      )}
+
+      {/* Sender Domain Info */}
+      {senderDomainInfo && (senderDomainInfo.registrar || senderDomainInfo.creation_date || senderDomainInfo.country) && (
+        <div className="card">
+          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <Globe className="h-5 w-5 text-primary-500" />
+            Sender Domain Intelligence
+          </h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {senderDomain && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <div className="text-xs text-gray-400">Domain</div>
+                <div className="text-white text-sm font-medium">{senderDomain}</div>
+              </div>
+            )}
+            {senderDomainInfo.registrar && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <div className="text-xs text-gray-400">Registrar</div>
+                <div className="text-white text-sm">{senderDomainInfo.registrar}</div>
+              </div>
+            )}
+            {senderDomainInfo.creation_date && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <div className="text-xs text-gray-400">Created</div>
+                <div className="text-white text-sm">{senderDomainInfo.creation_date}</div>
+              </div>
+            )}
+            {senderDomainInfo.country && (
+              <div className="p-3 bg-dark-500 rounded-lg">
+                <div className="text-xs text-gray-400">Country</div>
+                <div className="text-white text-sm">{senderDomainInfo.country}</div>
+              </div>
+            )}
+            {senderDomainInfo.is_new_domain && (
+              <div className="p-3 bg-orange-500/10 rounded-lg border border-orange-500/20 col-span-2">
+                <div className="text-orange-400 text-sm font-semibold">New Domain Warning</div>
+                <div className="text-orange-300 text-xs">This domain was recently registered — common in phishing campaigns</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* IOC Investigation Results */}
+      {iocInvestigation && iocInvestigation.summary && (
+        <div className="card">
+          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <Shield className="h-5 w-5 text-primary-500" />
+            Threat Intelligence (IOC Investigation)
+          </h3>
+          <div className="grid grid-cols-3 gap-4 mb-4">
+            <div className={`p-4 rounded-lg text-center ${iocInvestigation.summary.maliciousIOCs > 0 ? 'bg-red-500/10' : 'bg-dark-500'}`}>
+              <div className={`text-3xl font-bold ${iocInvestigation.summary.maliciousIOCs > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                {iocInvestigation.summary.maliciousIOCs || 0}
+              </div>
+              <div className="text-xs text-gray-400">Malicious IOCs</div>
+            </div>
+            <div className="p-4 rounded-lg bg-dark-500 text-center">
+              <div className="text-3xl font-bold text-white">{iocInvestigation.summary.totalIOCs || 0}</div>
+              <div className="text-xs text-gray-400">Total IOCs Checked</div>
+            </div>
+            <div className="p-4 rounded-lg bg-dark-500 text-center">
+              <div className="text-3xl font-bold text-white">{iocInvestigation.summary.overallRiskScore || 0}</div>
+              <div className="text-xs text-gray-400">IOC Risk Score</div>
+            </div>
+          </div>
+          {iocInvestigation.results && iocInvestigation.results.length > 0 && (
+            <div className="space-y-2">
+              {iocInvestigation.results.filter((r: any) => r.summary?.isMalicious).map((r: any, i: number) => (
+                <div key={i} className="p-3 bg-red-500/10 rounded-lg flex items-center gap-3">
+                  <AlertTriangle className="h-4 w-4 text-red-400 flex-shrink-0" />
+                  <div className="text-sm">
+                    <span className="text-red-300 font-medium">{r.ioc}</span>
+                    <span className="text-gray-400 ml-2">({r.type})</span>
+                    {r.summary?.findings?.length > 0 && (
+                      <div className="text-xs text-gray-500 mt-1">{r.summary.findings.slice(0, 2).join(' | ')}</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* QR Codes */}
+      {qrCodes.length > 0 && (
+        <div className="card">
+          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <QrCode className="h-5 w-5 text-primary-500" />
+            QR Codes Detected ({qrCodes.length})
+          </h3>
+          <div className="space-y-3">
+            {qrCodes.map((qr: any, i: number) => (
+              <div key={i} className="p-3 bg-dark-500 rounded-lg">
+                {qr.data && <div className="text-white text-sm font-mono break-all">{qr.data}</div>}
+                {qr.urls?.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {qr.urls.map((url: string, j: number) => (
+                      <div key={j} className="text-xs text-blue-400 flex items-center gap-1">
+                        <ExternalLink className="h-3 w-3" />
+                        <span className="break-all">{url}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {qr.risk_indicators?.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {qr.risk_indicators.map((ri: any, j: number) => (
+                      <span key={j} className={`text-xs px-2 py-0.5 rounded ${
+                        ri.severity === 'high' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'
+                      }`}>{ri.description || ri.type}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -700,8 +974,36 @@ function EmailResultsView({ analysis, riskScore }: { analysis: any; riskScore: n
         </div>
       )}
 
-      {/* URLs */}
-      {urls.length > 0 && <UrlList urls={urls} title="Extracted URLs" />}
+      {/* Enriched URLs */}
+      {enrichedUrls.length > 0 && (
+        <div className="card">
+          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <Link className="h-5 w-5 text-primary-500" />
+            Extracted URLs ({enrichedUrls.length})
+          </h3>
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {enrichedUrls.map((eu: any, i: number) => (
+              <div key={i} className="p-3 bg-dark-500 rounded-lg">
+                <div className="text-blue-400 text-sm font-mono break-all">{eu.url || eu.original}</div>
+                <div className="flex items-center gap-3 mt-2 text-xs text-gray-400">
+                  {eu.domain && <span>Domain: {eu.domain}</span>}
+                  {eu.ip && <span>IP: {eu.ip}</span>}
+                  {eu.country && <span>{eu.country}</span>}
+                  {eu.isSuspicious && (
+                    <span className="bg-red-500/20 text-red-400 px-2 py-0.5 rounded">Suspicious</span>
+                  )}
+                  {eu.download?.isDownload && (
+                    <span className="bg-orange-500/20 text-orange-400 px-2 py-0.5 rounded">Download: {eu.download.extension}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Fallback: raw URLs if no enriched URLs */}
+      {enrichedUrls.length === 0 && urls.length > 0 && <UrlList urls={urls} title="Extracted URLs" />}
     </div>
   )
 }

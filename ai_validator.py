@@ -188,8 +188,20 @@ class AIRiskValidator:
             elif gn.get('noise') and gn.get('classification') == 'benign':
                 analysis['factors']['neutral'].append('GreyNoise: Known benign scanner')
 
+        # Check BGPView for hosting/CDN detection (more accurate than static list)
+        if 'bgpview' in sources:
+            bgp = sources['bgpview']
+            asn_info = bgp.get('asn', {})
+            if bgp.get('isHosting') or bgp.get('isCdn'):
+                provider_name = asn_info.get('description') or asn_info.get('name') or 'Unknown'
+                analysis['falsePositiveIndicators'].append(f'BGPView: IP belongs to hosting/CDN provider ({provider_name})')
+                analysis['factors']['neutral'].append(f'BGPView: AS{asn_info.get("asn", "?")} — {provider_name} (hosting/CDN)')
+            elif asn_info.get('name'):
+                analysis['factors']['neutral'].append(f'BGPView: AS{asn_info.get("asn", "?")} — {asn_info["name"]}')
+
         # Calculate validated score using consensus
         analysis = self._calculate_consensus_score(analysis, clean_sources, threat_sources, total_sources)
+        analysis = self._cross_correlate_findings(analysis, results, 'ip')
 
         return analysis
 
@@ -336,7 +348,39 @@ class AIRiskValidator:
                 clean_sources += 1
                 analysis['factors']['positive'].append('MISP: Not in threat intelligence database')
 
+        # Check URLScan.io
+        if 'urlscanio' in sources:
+            usio = sources['urlscanio']
+            if usio.get('isMalicious'):
+                threat_sources += 2
+                analysis['factors']['negative'].append(f'URLScan.io: {usio.get("maliciousScans", 0)} malicious verdict(s)')
+                analysis['threatIndicators'].append({'source': 'URLScan.io', 'type': 'malicious_scan', 'severity': 'high'})
+            elif usio.get('totalScans', 0) > 0 and not usio.get('isMalicious'):
+                clean_sources += 1
+                analysis['factors']['positive'].append(f'URLScan.io: {usio.get("totalScans")} scans, no malicious verdicts')
+
+        # AITM Detection
+        aitm = results.get('aitmDetection', {})
+        if aitm.get('detected'):
+            severity = aitm.get('severity', 'high')
+            confidence = aitm.get('confidence', 0)
+            if severity == 'critical':
+                threat_sources += 4
+            elif severity == 'high':
+                threat_sources += 3
+            else:
+                threat_sources += 2
+            platforms = ', '.join(aitm.get('platforms', [])) or 'AITM indicators'
+            analysis['factors']['negative'].append(f'AITM Detection: {platforms} (confidence: {confidence}%)')
+            analysis['threatIndicators'].append({'source': 'AITM Detection', 'type': 'phishing_kit', 'severity': severity})
+            for mitre_id in aitm.get('mitre', []):
+                analysis.setdefault('mitreAttacks', []).append({'id': mitre_id, 'name': 'Adversary-in-the-Middle', 'severity': severity})
+        elif aitm.get('confidence', 0) >= 25:
+            threat_sources += 1
+            analysis['factors']['negative'].append(f'AITM Warning: Partial indicators detected (confidence: {aitm["confidence"]}%)')
+
         analysis = self._calculate_consensus_score(analysis, clean_sources, threat_sources, len(sources) + 2)
+        analysis = self._cross_correlate_findings(analysis, results, 'url')
 
         return analysis
 
@@ -413,7 +457,20 @@ class AIRiskValidator:
                 clean_sources += 1
                 analysis['factors']['positive'].append('ThreatFox: Not in IOC database')
 
+        # Check Malpedia enrichment
+        if 'malpedia' in sources:
+            mp = sources['malpedia']
+            if mp.get('attribution'):
+                threat_sources += 2
+                actors = ', '.join(mp['attribution'][:3])
+                analysis['factors']['negative'].append(f'Malpedia: Attributed to threat actor(s): {actors}')
+                analysis['threatIndicators'].append({'source': 'Malpedia', 'type': 'apt_attribution', 'severity': 'critical'})
+            if mp.get('mitreTechniques'):
+                for tech in mp['mitreTechniques'][:5]:
+                    analysis['mitreAttacks'].append({'id': tech, 'name': 'Malpedia technique', 'severity': 'high'})
+
         analysis = self._calculate_consensus_score(analysis, clean_sources, threat_sources, len(sources))
+        analysis = self._cross_correlate_findings(analysis, results, 'hash')
 
         return analysis
 
@@ -547,6 +604,29 @@ class AIRiskValidator:
                             threat_score += 15
                         elif severity == 'medium':
                             threat_score += 8
+
+        # Imphash cluster analysis
+        imphash_cluster = results.get('imphashCluster', {})
+        if imphash_cluster and not imphash_cluster.get('error'):
+            malicious_related = imphash_cluster.get('maliciousRelated', 0)
+            total_related = imphash_cluster.get('totalRelated', 0)
+            if malicious_related >= 3:
+                threat_score += 20
+                analysis['factors']['negative'].append(f'Imphash cluster: {malicious_related}/{total_related} related samples are malicious')
+                analysis['mitreAttacks'].append({'id': 'T1027.002', 'name': 'Software Packing (shared imphash)', 'severity': 'high'})
+            elif malicious_related >= 1:
+                threat_score += 10
+                analysis['factors']['negative'].append(f'Imphash cluster: {malicious_related} related malicious sample(s) found')
+            elif total_related > 0:
+                analysis['factors']['neutral'].append(f'Imphash cluster: {total_related} related samples, none flagged malicious')
+
+        # YARA matches
+        yara_matches = results.get('yaraMatches', [])
+        if yara_matches:
+            for match in yara_matches[:5]:
+                rule_name = match.get('rule', 'Unknown')
+                threat_score += 15
+                analysis['factors']['negative'].append(f'YARA match: {rule_name}')
 
         # Check for clean indicators
         if not behaviors and not network.get('connections') and threat_score < 20:
@@ -688,6 +768,87 @@ class AIRiskValidator:
             analysis['recommendation'] = 'CAUTION: Review carefully before opening'
         else:
             analysis['recommendation'] = 'LOW RISK: File appears safe'
+
+        return analysis
+
+    def _cross_correlate_findings(self, analysis: Dict, results: Dict, ioc_type: str) -> Dict:
+        """Cross-correlate findings across sources for confidence enrichment"""
+        sources = results.get('sources', {})
+        confidence_boost = 0
+
+        if ioc_type == 'hash':
+            # Hash: malware family agreement across VT + MalwareBazaar
+            vt_family = None
+            mb_family = None
+            vt_src = sources.get('virustotal', {})
+            mb_src = sources.get('malwarebazaar', {})
+
+            if vt_src.get('popularThreatName'):
+                vt_family = vt_src['popularThreatName'].lower()
+            elif vt_src.get('suggestedThreatLabel'):
+                vt_family = vt_src['suggestedThreatLabel'].lower()
+
+            if mb_src.get('signature'):
+                mb_family = mb_src['signature'].lower()
+
+            if vt_family and mb_family:
+                # Check if family names partially match
+                if vt_family in mb_family or mb_family in vt_family or any(
+                    part in vt_family for part in mb_family.split('.') if len(part) > 3
+                ):
+                    confidence_boost += 15
+                    analysis['reasoning'].append(f'Cross-correlation: VT and MalwareBazaar agree on malware family')
+
+        elif ioc_type == 'ip':
+            # IP: temporal analysis — stale AbuseIPDB reports reduce threat weight
+            abuse_src = sources.get('abuseipdb', {})
+            last_reported = abuse_src.get('lastReported')
+            if last_reported and abuse_src.get('abuseScore', 0) > 0:
+                try:
+                    from datetime import datetime as _dt
+                    last_dt = _dt.fromisoformat(last_reported.replace('Z', '+00:00').replace('+00:00', ''))
+                    days_since = (_dt.now() - last_dt).days
+                    if days_since > 180:
+                        confidence_boost -= 10
+                        analysis['factors']['positive'].append(f'AbuseIPDB: Last report was {days_since} days ago (stale)')
+                        analysis['falsePositiveIndicators'].append(f'Last abuse report is {days_since} days old')
+                except (ValueError, TypeError):
+                    pass
+
+        elif ioc_type == 'url':
+            # URL: AITM + new domain + suspicious TLD = compound critical
+            aitm = results.get('aitmDetection', {})
+            whois = results.get('whois', {})
+            domain = results.get('domain', '')
+
+            has_aitm = aitm.get('detected', False)
+            is_new_domain = (whois.get('domainAge', {}).get('days', 999) < 30) if whois and not whois.get('error') else False
+            has_suspicious_tld = any(domain.endswith(tld) for tld in SUSPICIOUS_TLDS)
+
+            compound_count = sum([has_aitm, is_new_domain, has_suspicious_tld])
+            if compound_count >= 3:
+                confidence_boost += 20
+                analysis['reasoning'].append('Cross-correlation: AITM + new domain + suspicious TLD — critical compound signal')
+            elif compound_count == 2:
+                confidence_boost += 10
+                analysis['reasoning'].append('Cross-correlation: Multiple suspicious URL indicators detected')
+
+        # Universal: 3+ independent sources flagging malicious
+        malicious_source_count = sum(1 for ti in analysis.get('threatIndicators', [])
+                                     if ti.get('severity') in ('high', 'critical'))
+        if malicious_source_count >= 3:
+            confidence_boost += 10
+            analysis['reasoning'].append(f'Cross-correlation: {malicious_source_count} independent sources flag as malicious')
+
+        # Apply confidence boost
+        if confidence_boost != 0:
+            current_confidence = analysis.get('confidence', 50)
+            analysis['confidence'] = max(0, min(100, current_confidence + confidence_boost))
+            current_score = analysis.get('validatedScore', 0)
+            if confidence_boost > 0 and analysis.get('validatedMalicious'):
+                analysis['validatedScore'] = min(100, current_score + confidence_boost // 2)
+            elif confidence_boost < 0:
+                analysis['validatedScore'] = max(0, current_score + confidence_boost)
 
         return analysis
 

@@ -2275,6 +2275,174 @@ def detect_phishing(msg, headers, urls, attachments, auth_results):
                 'description': f'Reply-To domain ({reply_domain}) differs from From domain ({from_domain})'
             })
 
+    # --- Enhanced Phishing Detection ---
+
+    # Display name spoofing: brand name in display name but non-brand domain
+    spoofed_brands = ['microsoft', 'office365', 'outlook', 'google', 'apple', 'amazon',
+                      'paypal', 'netflix', 'facebook', 'instagram', 'linkedin', 'dropbox',
+                      'docusign', 'adobe', 'zoom', 'slack', 'teams', 'sharepoint',
+                      'onedrive', 'bank', 'support', 'helpdesk', 'security', 'admin']
+    legit_sender_domains = ['microsoft.com', 'google.com', 'apple.com', 'amazon.com',
+                            'paypal.com', 'netflix.com', 'facebook.com', 'instagram.com',
+                            'linkedin.com', 'dropbox.com', 'docusign.com', 'adobe.com',
+                            'zoom.us', 'slack.com', 'teams.microsoft.com', 'sharepoint.com',
+                            'onedrive.com', 'outlook.com', 'live.com', 'office.com',
+                            'office365.com', 'hotmail.com', 'gmail.com']
+    from_display = from_addr.split('<')[0].strip().strip('"').lower() if '<' in from_addr else ''
+    from_domain = extract_domain_from_email(from_addr) or ''
+    if from_display:
+        for brand in spoofed_brands:
+            if brand in from_display and not any(from_domain.endswith(ld) for ld in legit_sender_domains):
+                indicators.append({
+                    'type': 'display_name_spoof',
+                    'severity': 'high',
+                    'description': f'Display name contains "{brand}" but sent from {from_domain} — likely spoofing'
+                })
+                break
+
+    # Suspicious TLDs in email URLs
+    suspicious_tlds = ['.xyz', '.top', '.work', '.click', '.link', '.gq', '.ml', '.cf',
+                       '.tk', '.ga', '.buzz', '.rest', '.surf', '.monster', '.quest',
+                       '.sbs', '.cfd', '.icu', '.cam', '.fun']
+    for url in urls[:20]:
+        try:
+            url_domain = urlparse(url).netloc.lower()
+            for tld in suspicious_tlds:
+                if url_domain.endswith(tld):
+                    indicators.append({
+                        'type': 'suspicious_tld',
+                        'severity': 'high',
+                        'description': f'URL uses suspicious TLD: {url_domain}'
+                    })
+                    break
+        except Exception:
+            pass
+
+    # Login/credential harvesting URL patterns on non-brand domains
+    login_patterns = ['/login', '/signin', '/auth', '/verify', '/account-verify',
+                      '/password', '/security-check', '/confirm', '/validate',
+                      '/update-billing', '/secure/', '/webmail/']
+    brand_domains = ['microsoft.com', 'google.com', 'apple.com', 'amazon.com',
+                     'paypal.com', 'facebook.com', 'linkedin.com', 'office.com',
+                     'outlook.com', 'live.com', 'github.com', 'gitlab.com']
+    for url in urls[:20]:
+        try:
+            parsed = urlparse(url)
+            url_domain = parsed.netloc.lower()
+            url_path = parsed.path.lower()
+            if any(lp in url_path for lp in login_patterns):
+                if not any(url_domain.endswith(bd) for bd in brand_domains):
+                    indicators.append({
+                        'type': 'credential_harvest',
+                        'severity': 'high',
+                        'description': f'Login/auth page on non-standard domain: {url_domain}{url_path[:40]}'
+                    })
+                    break
+        except Exception:
+            pass
+
+    # HTML form with external action (credential harvesting)
+    if body_html:
+        form_pattern = re.compile(r'<form[^>]+action=["\']?(https?://[^"\'>\s]+)', re.IGNORECASE)
+        for form_match in form_pattern.finditer(body_html):
+            form_action = form_match.group(1)
+            try:
+                action_domain = urlparse(form_action).netloc.lower()
+                if action_domain and not any(action_domain.endswith(bd) for bd in brand_domains):
+                    indicators.append({
+                        'type': 'external_form',
+                        'severity': 'high',
+                        'description': f'HTML form submits credentials to external domain: {action_domain}'
+                    })
+            except Exception:
+                pass
+
+    # Brand impersonation in URL domains (brand keyword in domain but not legit)
+    brand_url_checks = [('microsoft', 'microsoft.com'), ('office', 'office.com'),
+                        ('outlook', 'outlook.com'), ('google', 'google.com'),
+                        ('apple', 'apple.com'), ('paypal', 'paypal.com'),
+                        ('amazon', 'amazon.com'), ('netflix', 'netflix.com'),
+                        ('facebook', 'facebook.com'), ('linkedin', 'linkedin.com'),
+                        ('docusign', 'docusign.com'), ('dropbox', 'dropbox.com')]
+    for url in urls[:20]:
+        try:
+            url_domain = urlparse(url).netloc.lower()
+            for brand, legit in brand_url_checks:
+                if brand in url_domain and not url_domain.endswith(legit):
+                    indicators.append({
+                        'type': 'brand_impersonation',
+                        'severity': 'high',
+                        'description': f'URL domain impersonates {brand}: {url_domain}'
+                    })
+                    break
+        except Exception:
+            pass
+
+    # Urgency in body text (not just subject)
+    body_text = ''
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == 'text/plain':
+                try:
+                    body_text = part.get_content()
+                    if isinstance(body_text, bytes):
+                        body_text = body_text.decode('utf-8', errors='ignore')
+                    break
+                except Exception:
+                    pass
+    elif msg.get_content_type() == 'text/plain':
+        try:
+            body_text = msg.get_content()
+            if isinstance(body_text, bytes):
+                body_text = body_text.decode('utf-8', errors='ignore')
+        except Exception:
+            pass
+
+    body_lower = body_text.lower() if body_text else ''
+    body_urgency = ['your account will be', 'suspended', 'verify your', 'confirm your identity',
+                    'unauthorized access', 'click the link below', 'act now', 'failure to respond',
+                    'will be terminated', 'account has been compromised', 'unusual sign-in',
+                    'password expir', 'billing information', 'payment declined']
+    matched_urgency = [kw for kw in body_urgency if kw in body_lower]
+    if len(matched_urgency) >= 2:
+        indicators.append({
+            'type': 'urgency_body',
+            'severity': 'high',
+            'description': f'Multiple urgency phrases in body: {", ".join(matched_urgency[:3])}'
+        })
+    elif len(matched_urgency) == 1:
+        indicators.append({
+            'type': 'urgency_body',
+            'severity': 'medium',
+            'description': f'Urgency phrase in body: "{matched_urgency[0]}"'
+        })
+
+    # Encoded/obfuscated URLs (hex encoding, double encoding)
+    for url in urls[:20]:
+        if '%25' in url or '%3A%2F%2F' in url or url.count('%') > 5:
+            indicators.append({
+                'type': 'obfuscated_url',
+                'severity': 'medium',
+                'description': f'Heavily encoded/obfuscated URL detected'
+            })
+            break
+
+    # URL shorteners (commonly used to hide phishing destinations)
+    shortener_domains = ['bit.ly', 'tinyurl.com', 't.co', 'goo.gl', 'ow.ly', 'is.gd',
+                         'buff.ly', 'rebrand.ly', 'bl.ink', 'short.io', 'cutt.ly', 'rb.gy']
+    for url in urls[:20]:
+        try:
+            url_domain = urlparse(url).netloc.lower()
+            if url_domain in shortener_domains:
+                indicators.append({
+                    'type': 'url_shortener',
+                    'severity': 'medium',
+                    'description': f'URL shortener used: {url_domain} — may hide phishing destination'
+                })
+                break
+        except Exception:
+            pass
+
     return indicators
 
 
@@ -2311,14 +2479,34 @@ def calculate_email_risk_score(indicators, auth_results, attachments, sender_dom
     """Calculate risk score for email (0-100)"""
     score = 0
 
-    # Base score for indicators
+    # Weighted scoring by indicator type (some types are stronger signals)
+    high_confidence_types = {'display_name_spoof', 'credential_harvest', 'external_form',
+                             'brand_impersonation', 'url_mismatch'}
+    indicator_types = set()
+
     for ind in indicators:
+        ind_type = ind.get('type', '')
+        indicator_types.add(ind_type)
+
         if ind['severity'] == 'high':
-            score += 20
+            # High-confidence phishing indicators get extra weight
+            if ind_type in high_confidence_types:
+                score += 25
+            else:
+                score += 20
         elif ind['severity'] == 'medium':
             score += 10
         else:
             score += 5
+
+    # Compound signal boost: multiple different phishing types = more confident
+    phishing_signal_types = indicator_types & {'display_name_spoof', 'credential_harvest',
+        'external_form', 'brand_impersonation', 'url_mismatch', 'lookalike_domain',
+        'suspicious_tld', 'urgency', 'urgency_body', 'reply_mismatch', 'auth_failure'}
+    if len(phishing_signal_types) >= 3:
+        score += 20  # Strong compound signal
+    elif len(phishing_signal_types) >= 2:
+        score += 10  # Moderate compound signal
 
     # Bonus for failed authentication
     failed_auth = 0
@@ -2326,6 +2514,10 @@ def calculate_email_risk_score(indicators, auth_results, attachments, sender_dom
         if auth_results[key]['status'] in ('fail', 'softfail'):
             failed_auth += 1
     score += failed_auth * 5
+
+    # All three auth failed = very suspicious
+    if failed_auth >= 3:
+        score += 15
 
     # Bonus for suspicious attachments
     for att in attachments:
@@ -3209,6 +3401,8 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/api/my-ip':
             self.handle_my_ip()
+        elif self.path == '/api/my-location':
+            self.handle_my_location()
         elif self.path.startswith('/api/lookup'):
             self.handle_lookup()
         elif self.path == '/api/status':
@@ -4523,6 +4717,36 @@ class IPLookupHandler(SimpleHTTPRequestHandler):
     def handle_my_ip(self):
         ip = self.get_client_ip()
         self.send_json({'ip': ip})
+
+    def handle_my_location(self):
+        """Return the user's geolocation based on their IP."""
+        ip = self.get_client_ip()
+
+        # Handle localhost/private IPs - let ip-api.com resolve the public IP
+        query_ip = ip
+        if ip in ('127.0.0.1', '::1') or ip.startswith('192.168.') or ip.startswith('10.') or ip.startswith('172.'):
+            query_ip = ''
+
+        try:
+            api_url = f'http://ip-api.com/json/{query_ip}?fields=status,message,country,countryCode,city,lat,lon,query'
+            req = urllib.request.Request(api_url, headers={'User-Agent': 'IPLookup/1.0'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode())
+
+            if data.get('status') == 'fail':
+                self.send_json({'error': data.get('message', 'Could not geolocate')}, 400)
+                return
+
+            self.send_json({
+                'ip': data.get('query', ip),
+                'latitude': data.get('lat'),
+                'longitude': data.get('lon'),
+                'city': data.get('city', ''),
+                'country': data.get('country', ''),
+                'countryCode': data.get('countryCode', ''),
+            })
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
 
     def handle_lookup(self):
         path_parts = self.path.split('/')

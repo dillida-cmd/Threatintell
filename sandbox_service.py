@@ -31,6 +31,18 @@ try:
 except ImportError:
     PE_ANALYSIS_AVAILABLE = False
 
+# YARA scanning
+try:
+    import yara
+    YARA_AVAILABLE = True
+except ImportError:
+    YARA_AVAILABLE = False
+
+# YARA rules directory
+YARA_RULES_DIR = os.path.join(os.path.dirname(__file__), 'yara_rules')
+_compiled_yara_rules = None
+_yara_rules_lock = threading.Lock()
+
 # Configuration
 SANDBOX_DIR = os.path.join(os.path.dirname(__file__), 'sandbox')
 SESSIONS_DIR = os.path.join(SANDBOX_DIR, 'sessions')
@@ -157,6 +169,64 @@ def ensure_directories():
 
 # Initialize directories on import
 ensure_directories()
+
+
+# =============================================================================
+# YARA Scanning
+# =============================================================================
+
+def _compile_yara_rules():
+    """Compile YARA rules from the yara_rules directory (cached)"""
+    global _compiled_yara_rules
+    if not YARA_AVAILABLE:
+        return None
+
+    with _yara_rules_lock:
+        if _compiled_yara_rules is not None:
+            return _compiled_yara_rules
+
+        if not os.path.isdir(YARA_RULES_DIR):
+            os.makedirs(YARA_RULES_DIR, exist_ok=True)
+            return None
+
+        rule_files = {}
+        for fname in os.listdir(YARA_RULES_DIR):
+            if fname.endswith(('.yar', '.yara')):
+                rule_path = os.path.join(YARA_RULES_DIR, fname)
+                rule_files[fname.replace('.', '_')] = rule_path
+
+        if not rule_files:
+            return None
+
+        try:
+            _compiled_yara_rules = yara.compile(filepaths=rule_files)
+            print(f"[Sandbox] Compiled {len(rule_files)} YARA rule file(s)")
+            return _compiled_yara_rules
+        except Exception as e:
+            print(f"[Sandbox] YARA compilation error: {e}")
+            return None
+
+
+def scan_with_yara(file_path: str) -> List[Dict]:
+    """Scan a file with compiled YARA rules"""
+    rules = _compile_yara_rules()
+    if not rules:
+        return []
+
+    try:
+        matches = rules.match(file_path, timeout=30)
+        results = []
+        for match in matches:
+            results.append({
+                'rule': match.rule,
+                'tags': list(match.tags) if match.tags else [],
+                'meta': dict(match.meta) if match.meta else {},
+                'namespace': match.namespace
+            })
+        return results
+    except Exception as e:
+        print(f"[Sandbox] YARA scan error: {e}")
+        return []
 
 
 # =============================================================================
@@ -1921,6 +1991,24 @@ class SandboxSession:
                     result['fileAnalysis']['magic'] = pe_analysis.get('basicProperties', {}).get('magic', '')
                     result['fileAnalysis']['imphash'] = pe_analysis.get('basicProperties', {}).get('imphash', '')
 
+                    # Imphash clustering via VirusTotal
+                    imphash_val = pe_analysis.get('basicProperties', {}).get('imphash')
+                    if imphash_val:
+                        try:
+                            from threat_intel import check_virustotal_imphash
+                            imphash_result = check_virustotal_imphash(imphash_val)
+                            if 'error' not in imphash_result:
+                                result['imphashCluster'] = imphash_result
+                        except Exception as e:
+                            print(f"[Sandbox] Imphash cluster lookup error: {e}")
+
+                # YARA scanning for executables
+                yara_matches = scan_with_yara(file_path)
+                if yara_matches:
+                    result['yaraMatches'] = yara_matches
+                    for match in yara_matches:
+                        result.setdefault('riskReasons', [])
+
                 # Check if dynamic execution is supported
                 caps = _config.detect_capabilities()
                 supported = caps.get('supported_types', {}).get('executables', False)
@@ -2893,6 +2981,18 @@ class SandboxSession:
             level = 'Low'
         else:
             level = 'Clean'
+
+        # Add YARA match risk reasons
+        yara_matches = analysis_result.get('yaraMatches', [])
+        for match in yara_matches:
+            score += 15
+            risk_reasons.append({
+                'category': 'YARA Match',
+                'description': f'Matched YARA rule: {match.get("rule", "Unknown")}',
+                'severity': 'high',
+                'score_contribution': 15,
+                'technique': 'T1588.001 - Obtain Capabilities: Malware'
+            })
 
         # Store risk reasons and threat map in result
         analysis_result['riskReasons'] = risk_reasons

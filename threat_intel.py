@@ -20,6 +20,241 @@ from functools import lru_cache
 import base64
 import re
 
+# =============================================================================
+# AITM (Adversary-in-the-Middle) Phishing Platform Signatures
+# =============================================================================
+
+AITM_PLATFORMS = {
+    'evilproxy': {
+        'name': 'EvilProxy',
+        'domain_patterns': [r'login\.evilproxy', r'evilproxy\.(com|net|io)', r'ep-auth\.'],
+        'url_path_patterns': [r'/lure/', r'/proxy/', r'/rp/', r'/evilginx/'],
+        'severity': 'critical',
+        'mitre': ['T1557.001', 'T1556.006'],
+        'description': 'Phishing-as-a-Service platform targeting MFA with reverse proxy'
+    },
+    'evilginx2': {
+        'name': 'EvilGinx2',
+        'domain_patterns': [r'evilginx', r'ginx2?\.'],
+        'url_path_patterns': [r'/phishlet/', r'/lure/', r'/o365/', r'/outlook/'],
+        'severity': 'critical',
+        'mitre': ['T1557.001', 'T1556.006'],
+        'description': 'Open-source MITM framework for phishing login credentials and session cookies'
+    },
+    'tycoon2fa': {
+        'name': 'Tycoon 2FA',
+        'domain_patterns': [r'tycoon', r't2fa\.'],
+        'url_path_patterns': [r'/2fa/', r'/auth-verify/', r'/mfa-check/'],
+        'severity': 'critical',
+        'mitre': ['T1557.001', 'T1539'],
+        'description': 'Phishing kit targeting Microsoft 365 and Google with 2FA bypass'
+    },
+    'greatness': {
+        'name': 'Greatness',
+        'domain_patterns': [r'greatness', r'grt-phish'],
+        'url_path_patterns': [r'/greatness/', r'/grt/', r'/phish-page/'],
+        'severity': 'high',
+        'mitre': ['T1557.001', 'T1539'],
+        'description': 'Microsoft 365 phishing kit with MFA bypass and Telegram bot exfil'
+    },
+    'caffeine': {
+        'name': 'Caffeine',
+        'domain_patterns': [r'caffeine-phish', r'caff\.'],
+        'url_path_patterns': [r'/caffeine/', r'/caff-auth/'],
+        'severity': 'high',
+        'mitre': ['T1557.001'],
+        'description': 'Subscription-based phishing platform'
+    },
+    'w3ll': {
+        'name': 'W3LL Panel',
+        'domain_patterns': [r'w3ll', r'well-panel'],
+        'url_path_patterns': [r'/w3ll/', r'/panel-auth/', r'/o365-auth/'],
+        'severity': 'critical',
+        'mitre': ['T1557.001', 'T1539'],
+        'description': 'BEC-focused phishing kit with Microsoft 365 session hijacking'
+    },
+    'nakedpages': {
+        'name': 'NakedPages',
+        'domain_patterns': [r'nakedpages', r'naked-page'],
+        'url_path_patterns': [r'/naked/', r'/np-auth/'],
+        'severity': 'high',
+        'mitre': ['T1557.001'],
+        'description': 'Phishing kit with anti-bot and detection evasion'
+    },
+    'dadsec': {
+        'name': 'DadSec/Phoenix',
+        'domain_patterns': [r'dadsec', r'phoenix-auth', r'phnx\.'],
+        'url_path_patterns': [r'/dadsec/', r'/phoenix/', r'/phnx-auth/'],
+        'severity': 'critical',
+        'mitre': ['T1557.001', 'T1539'],
+        'description': 'Advanced phishing platform with rotating infrastructure'
+    }
+}
+
+AITM_GENERIC_INDICATORS = {
+    'brand_impersonation': {
+        'brands': ['microsoft', 'office365', 'outlook', 'onedrive', 'sharepoint',
+                   'google', 'gmail', 'facebook', 'instagram', 'apple', 'icloud',
+                   'amazon', 'netflix', 'paypal', 'linkedin', 'dropbox', 'adobe',
+                   'docusign', 'zoom', 'slack', 'teams', 'webex'],
+        'legitimate_domains': ['microsoft.com', 'office.com', 'live.com', 'outlook.com',
+                               'google.com', 'gmail.com', 'facebook.com', 'instagram.com',
+                               'apple.com', 'icloud.com', 'amazon.com', 'netflix.com',
+                               'paypal.com', 'linkedin.com', 'dropbox.com', 'adobe.com',
+                               'docusign.com', 'zoom.us', 'slack.com', 'teams.microsoft.com',
+                               'webex.com']
+    },
+    'suspicious_tlds': ['.xyz', '.top', '.work', '.click', '.link', '.gq', '.ml', '.cf',
+                        '.tk', '.ga', '.buzz', '.rest', '.surf', '.monster', '.quest',
+                        '.sbs', '.cfd', '.icu', '.cam', '.fun'],
+    'login_path_patterns': [
+        r'/login', r'/signin', r'/auth', r'/authenticate', r'/verify',
+        r'/security-check', r'/account-verify', r'/password-reset',
+        r'/mfa', r'/2fa', r'/otp', r'/session', r'/sso'
+    ]
+}
+
+
+def check_aitm_indicators(url: str, domain: str, whois_data: Dict = None, dns_data: Dict = None) -> Dict:
+    """Check URL/domain for Adversary-in-the-Middle phishing indicators"""
+    result = {
+        'detected': False,
+        'confidence': 0,
+        'platforms': [],
+        'indicators': [],
+        'severity': 'none',
+        'mitre': [],
+        'recommendation': ''
+    }
+
+    if not url and not domain:
+        return result
+
+    url_lower = (url or '').lower()
+    domain_lower = (domain or '').lower()
+    confidence = 0
+    severity_levels = []
+
+    # 1. Check against known AITM platform signatures
+    for platform_key, platform in AITM_PLATFORMS.items():
+        matched = False
+        # Domain pattern match
+        for pattern in platform['domain_patterns']:
+            if re.search(pattern, domain_lower):
+                result['platforms'].append(platform['name'])
+                result['indicators'].append({
+                    'type': 'platform_domain',
+                    'detail': f"Domain matches {platform['name']} pattern: {pattern}",
+                    'severity': platform['severity']
+                })
+                result['mitre'].extend(platform['mitre'])
+                confidence += 40
+                severity_levels.append(platform['severity'])
+                matched = True
+                break
+        # URL path pattern match
+        if not matched:
+            for pattern in platform['url_path_patterns']:
+                if re.search(pattern, url_lower):
+                    result['platforms'].append(platform['name'])
+                    result['indicators'].append({
+                        'type': 'platform_url_path',
+                        'detail': f"URL path matches {platform['name']} pattern: {pattern}",
+                        'severity': platform['severity']
+                    })
+                    result['mitre'].extend(platform['mitre'])
+                    confidence += 30
+                    severity_levels.append(platform['severity'])
+                    break
+
+    # 2. Brand impersonation check
+    brand_info = AITM_GENERIC_INDICATORS['brand_impersonation']
+    is_legitimate = any(domain_lower.endswith(legit) for legit in brand_info['legitimate_domains'])
+
+    if not is_legitimate:
+        for brand in brand_info['brands']:
+            if brand in domain_lower:
+                result['indicators'].append({
+                    'type': 'brand_impersonation',
+                    'detail': f"Domain contains '{brand}' but is not an official {brand} domain",
+                    'severity': 'high'
+                })
+                confidence += 25
+                severity_levels.append('high')
+                break
+
+    # 3. Suspicious TLD check
+    for tld in AITM_GENERIC_INDICATORS['suspicious_tlds']:
+        if domain_lower.endswith(tld):
+            result['indicators'].append({
+                'type': 'suspicious_tld',
+                'detail': f"Uses suspicious TLD: {tld}",
+                'severity': 'medium'
+            })
+            confidence += 10
+            severity_levels.append('medium')
+            break
+
+    # 4. Login path pattern check
+    for pattern in AITM_GENERIC_INDICATORS['login_path_patterns']:
+        if re.search(pattern, url_lower):
+            result['indicators'].append({
+                'type': 'login_path',
+                'detail': f"URL contains login/auth path pattern",
+                'severity': 'medium'
+            })
+            confidence += 10
+            break
+
+    # 5. Cross-reference domain age from WHOIS
+    if whois_data and not whois_data.get('error'):
+        domain_age = whois_data.get('domainAge', {})
+        days = domain_age.get('days', 999)
+        if days < 30 and confidence > 0:
+            result['indicators'].append({
+                'type': 'new_domain',
+                'detail': f"Domain is only {days} days old — combined with AITM patterns, highly suspicious",
+                'severity': 'critical'
+            })
+            confidence += 20
+            severity_levels.append('critical')
+        elif days < 90 and confidence > 0:
+            result['indicators'].append({
+                'type': 'young_domain',
+                'detail': f"Domain is {days} days old — relatively new for a login page",
+                'severity': 'high'
+            })
+            confidence += 10
+            severity_levels.append('high')
+
+    # 6. Determine overall severity
+    severity_rank = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1, 'none': 0}
+    if severity_levels:
+        max_severity = max(severity_levels, key=lambda s: severity_rank.get(s, 0))
+        result['severity'] = max_severity
+
+    # 7. Finalize result
+    confidence = min(confidence, 100)
+    result['confidence'] = confidence
+    result['mitre'] = list(set(result['mitre']))
+
+    if confidence >= 50:
+        result['detected'] = True
+        platform_names = ', '.join(result['platforms']) if result['platforms'] else 'Generic AITM'
+        result['recommendation'] = (
+            f"HIGH RISK: This URL/domain exhibits strong indicators of an Adversary-in-the-Middle "
+            f"phishing attack ({platform_names}). Do NOT enter credentials. Block this domain immediately "
+            f"and check for compromised sessions if any user has visited this URL."
+        )
+    elif confidence >= 25:
+        result['recommendation'] = (
+            "SUSPICIOUS: This URL/domain shows some indicators associated with phishing infrastructure. "
+            "Exercise caution and verify the domain legitimacy before entering any credentials."
+        )
+
+    return result
+
+
 # Configuration file path
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'api_keys.json')
 CACHE_DB_FILE = os.path.join(os.path.dirname(__file__), 'ioc_cache.db')
@@ -1866,6 +2101,259 @@ def check_shodan(ip: str) -> Dict:
 
 
 # =============================================================================
+# URLScan.io
+# =============================================================================
+
+def check_urlscanio(url_to_check: str) -> Dict:
+    """Check URL/domain on URLScan.io search API"""
+    from urllib.parse import urlparse as _urlparse
+    parsed = _urlparse(url_to_check)
+    domain = parsed.hostname or url_to_check
+
+    cache_key = f"urlscanio:domain:{domain}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    if not check_rate_limit('urlscanio', 2, 60):  # 2/min
+        return {'error': 'Rate limit exceeded', 'source': 'urlscanio'}
+
+    api_url = f"https://urlscan.io/api/v1/search/?q=domain:{domain}&size=5"
+    headers = {'Accept': 'application/json'}
+
+    # Optional API key for higher limits
+    api_key = get_api_key('urlscanio')
+    if api_key:
+        headers['API-Key'] = api_key
+
+    response = make_request(api_url, headers=headers, timeout=15)
+    if response and 'results' in response:
+        total_scans = response.get('total', 0)
+        scan_results = response.get('results', [])
+
+        malicious_count = 0
+        verdicts = []
+        page_info = {}
+
+        for scan in scan_results[:5]:
+            verdict = scan.get('verdicts', {}).get('overall', {})
+            if verdict.get('malicious'):
+                malicious_count += 1
+            if verdict.get('categories'):
+                verdicts.extend(verdict['categories'])
+
+            # Get page info from most recent scan
+            if not page_info and scan.get('page'):
+                page_info = {
+                    'server': scan['page'].get('server', ''),
+                    'ip': scan['page'].get('ip', ''),
+                    'country': scan['page'].get('country', ''),
+                    'title': scan['page'].get('title', '')[:100],
+                    'statusCode': scan['page'].get('status', 0)
+                }
+
+        result = {
+            'source': 'urlscanio',
+            'domain': domain,
+            'totalScans': total_scans,
+            'maliciousScans': malicious_count,
+            'isMalicious': malicious_count > 0,
+            'verdicts': list(set(verdicts))[:10],
+            'pageInfo': page_info
+        }
+        set_cached(cache_key, result)
+        return result
+
+    return {'error': 'No data returned', 'source': 'urlscanio'}
+
+
+# =============================================================================
+# BGPView (IP ASN/Prefix lookup)
+# =============================================================================
+
+def check_bgpview(ip: str) -> Dict:
+    """Check IP on BGPView for ASN, prefix, and hosting/CDN detection"""
+    cache_key = f"bgpview:ip:{ip}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    if not check_rate_limit('bgpview', 30, 60):  # 30/min
+        return {'error': 'Rate limit exceeded', 'source': 'bgpview'}
+
+    api_url = f"https://api.bgpview.io/ip/{ip}"
+    headers = {'Accept': 'application/json'}
+
+    response = make_request(api_url, headers=headers, timeout=10)
+    if response and response.get('status') == 'ok' and response.get('data'):
+        data = response['data']
+        prefixes = data.get('rir_allocation', {})
+        ptr = data.get('ptr_record')
+
+        # Get primary ASN info from prefixes
+        asn_info = {}
+        prefix = ''
+        if data.get('prefixes') and len(data['prefixes']) > 0:
+            first_prefix = data['prefixes'][0]
+            prefix = first_prefix.get('prefix', '')
+            asn_data = first_prefix.get('asn', {})
+            asn_info = {
+                'asn': asn_data.get('asn', 0),
+                'name': asn_data.get('name', ''),
+                'description': asn_data.get('description', ''),
+                'country': asn_data.get('country_code', '')
+            }
+
+        # Detect hosting/CDN from ASN description keywords
+        hosting_keywords = ['hosting', 'server', 'vps', 'cloud', 'data center', 'datacenter',
+                           'hetzner', 'ovh', 'digitalocean', 'linode', 'vultr', 'contabo',
+                           'hostinger', 'godaddy', 'bluehost', 'ionos', 'scaleway', 'choopa',
+                           'amazon', 'aws', 'azure', 'google cloud', 'gcp', 'oracle cloud',
+                           'alibaba cloud', 'tencent cloud', 'rackspace']
+        cdn_keywords = ['cloudflare', 'akamai', 'fastly', 'cdn', 'content delivery',
+                       'incapsula', 'imperva', 'stackpath', 'limelight', 'edgecast',
+                       'bunnycdn', 'keycdn', 'cloudfront']
+
+        asn_desc = (asn_info.get('description', '') + ' ' + asn_info.get('name', '')).lower()
+        is_hosting = any(kw in asn_desc for kw in hosting_keywords)
+        is_cdn = any(kw in asn_desc for kw in cdn_keywords)
+
+        result = {
+            'source': 'bgpview',
+            'ip': ip,
+            'prefix': prefix,
+            'asn': asn_info,
+            'rir': prefixes.get('rir_name', ''),
+            'ptr': ptr,
+            'isHosting': is_hosting,
+            'isCdn': is_cdn
+        }
+        set_cached(cache_key, result)
+        return result
+
+    return {'error': 'No data returned', 'source': 'bgpview'}
+
+
+# =============================================================================
+# VirusTotal Imphash Cluster Search
+# =============================================================================
+
+def check_virustotal_imphash(imphash: str) -> Dict:
+    """Search VirusTotal for related samples by import hash"""
+    if not imphash:
+        return {'error': 'No imphash provided', 'source': 'virustotal_imphash'}
+
+    cache_key = f"vt:imphash:{imphash}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    api_key = get_api_key('virustotal')
+    if not api_key:
+        return {'error': 'API key not configured', 'source': 'virustotal_imphash'}
+
+    if not check_rate_limit('virustotal', 4, 60):  # 4/min
+        return {'error': 'Rate limit exceeded', 'source': 'virustotal_imphash'}
+
+    url = f"https://www.virustotal.com/api/v3/search?query=imphash:{imphash}&limit=10"
+    headers = {'x-apikey': api_key}
+
+    response = make_request(url, headers=headers, timeout=15)
+    if response and 'data' in response:
+        samples = response.get('data', [])
+        total_related = len(samples)
+        malicious_related = 0
+        related_samples = []
+
+        for sample in samples[:10]:
+            attrs = sample.get('attributes', {})
+            stats = attrs.get('last_analysis_stats', {})
+            mal_count = stats.get('malicious', 0)
+            if mal_count > 3:
+                malicious_related += 1
+            related_samples.append({
+                'sha256': sample.get('id', ''),
+                'name': attrs.get('meaningful_name', attrs.get('type_description', 'Unknown')),
+                'malicious': mal_count,
+                'total': sum(stats.values()) if stats else 0,
+                'type': attrs.get('type_description', '')
+            })
+
+        cluster_risk = 'high' if malicious_related >= 3 else 'medium' if malicious_related >= 1 else 'low'
+
+        result = {
+            'source': 'virustotal_imphash',
+            'imphash': imphash,
+            'totalRelated': total_related,
+            'maliciousRelated': malicious_related,
+            'relatedSamples': related_samples,
+            'clusterRisk': cluster_risk
+        }
+        set_cached(cache_key, result)
+        return result
+
+    return {'error': 'No data returned', 'source': 'virustotal_imphash'}
+
+
+# =============================================================================
+# Malpedia Malware Family Lookup
+# =============================================================================
+
+def check_malpedia_family(family_name: str) -> Dict:
+    """Look up malware family details on Malpedia"""
+    if not family_name:
+        return {'error': 'No family name provided', 'source': 'malpedia'}
+
+    cache_key = f"malpedia:family:{family_name.lower()}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    api_key = get_api_key('malpedia')
+    if not api_key:
+        return {'error': 'API key not configured', 'source': 'malpedia'}
+
+    if not check_rate_limit('malpedia', 10, 60):  # 10/min
+        return {'error': 'Rate limit exceeded', 'source': 'malpedia'}
+
+    # Normalize family name (Malpedia uses underscores)
+    normalized = family_name.lower().replace(' ', '_').replace('-', '_')
+    url = f"https://malpedia.caad.fkie.fraunhofer.de/api/get/family/{normalized}"
+    headers = {'Authorization': f'apitoken {api_key}'}
+
+    response = make_request(url, headers=headers, timeout=15)
+    if response and not isinstance(response, list):
+        result = {
+            'source': 'malpedia',
+            'family': family_name,
+            'description': response.get('description', '')[:500],
+            'altNames': response.get('alt_names', [])[:10],
+            'urls': response.get('urls', [])[:5],
+            'attribution': [],
+            'mitreTechniques': []
+        }
+
+        # Extract actor attribution
+        for actor in response.get('attribution', [])[:5]:
+            if isinstance(actor, str):
+                result['attribution'].append(actor)
+            elif isinstance(actor, dict):
+                result['attribution'].append(actor.get('actor', actor.get('name', 'Unknown')))
+
+        # Extract MITRE techniques
+        for technique in response.get('techniques', [])[:10]:
+            if isinstance(technique, str):
+                result['mitreTechniques'].append(technique)
+            elif isinstance(technique, dict):
+                result['mitreTechniques'].append(technique.get('id', ''))
+
+        set_cached(cache_key, result)
+        return result
+
+    return {'error': 'No data returned', 'source': 'malpedia'}
+
+
+# =============================================================================
 # MISP Threat Intelligence Platform
 # =============================================================================
 
@@ -2141,12 +2629,13 @@ def investigate_ip(ip: str) -> Dict:
         ('alienvault_otx', check_alienvault_ip),
         ('greynoise', check_greynoise),
         ('shodan', check_shodan),
+        ('bgpview', check_bgpview),
         ('threatfox', lambda ip: check_threatfox_ioc(ip, 'ip:port')),
         ('misp', check_misp_ip),
     ]
 
     for service_name, check_func in services:
-        if is_service_enabled(service_name) or service_name in ['urlhaus', 'threatfox']:
+        if is_service_enabled(service_name) or service_name in ['urlhaus', 'threatfox', 'bgpview']:
             try:
                 result = check_func(ip)
                 if 'error' not in result:
@@ -2876,11 +3365,12 @@ def investigate_url(url: str) -> Dict:
         ('virustotal', check_virustotal_url),
         ('urlhaus', check_urlhaus),
         ('alienvault_otx', check_alienvault_url),
+        ('urlscanio', check_urlscanio),
         ('misp', check_misp_url),
     ]
 
     for service_name, check_func in services:
-        if is_service_enabled(service_name) or service_name in ['urlhaus']:
+        if is_service_enabled(service_name) or service_name in ['urlhaus', 'urlscanio']:
             try:
                 result = check_func(target_url)
                 if 'error' not in result:
@@ -2893,6 +3383,9 @@ def investigate_url(url: str) -> Dict:
                     elif service_name == 'urlhaus' and result.get('threat'):
                         results['summary']['maliciousSources'] += 1
                         results['summary']['findings'].append(f"URLhaus: {result.get('threat')}")
+                    elif service_name == 'urlscanio' and result.get('isMalicious'):
+                        results['summary']['maliciousSources'] += 1
+                        results['summary']['findings'].append(f"URLScan.io: {result.get('maliciousScans')} malicious scan(s)")
                     elif service_name == 'alienvault_otx' and result.get('pulseCount', 0) > 0:
                         pulse_count = result.get('pulseCount', 0)
                         results['summary']['findings'].append(f"AlienVault: {pulse_count} threat pulses")
@@ -2947,6 +3440,23 @@ def investigate_url(url: str) -> Dict:
                     results['summary']['riskScore'] = max(results['summary']['riskScore'], 20)
         except Exception as e:
             results['whois'] = {'error': str(e)}
+
+    # AITM Phishing Detection
+    try:
+        aitm_result = check_aitm_indicators(
+            target_url, domain,
+            whois_data=results.get('whois'),
+            dns_data=results.get('dns')
+        )
+        if aitm_result.get('detected') or aitm_result.get('confidence', 0) >= 25:
+            results['aitmDetection'] = aitm_result
+            if aitm_result.get('detected'):
+                results['summary']['maliciousSources'] += 1
+                platform_str = ', '.join(aitm_result.get('platforms', [])) or 'AITM indicators'
+                results['summary']['findings'].append(f"AITM Detection: {platform_str} (confidence: {aitm_result['confidence']}%)")
+                results['summary']['riskScore'] = max(results['summary']['riskScore'], 70 + aitm_result['confidence'] // 5)
+    except Exception as e:
+        print(f"[ThreatIntel] AITM detection error: {e}")
 
     if results['summary']['maliciousSources'] > 0:
         results['summary']['isMalicious'] = True
@@ -3159,6 +3669,41 @@ def investigate_hash(file_hash: str) -> Dict:
 
             except Exception as e:
                 results['sources'][service_name] = {'error': str(e)}
+
+    # Malpedia enrichment: extract family name from VT/MalwareBazaar and query
+    try:
+        family_name = None
+        vt_source = results['sources'].get('virustotal', {})
+        mb_source = results['sources'].get('malwarebazaar', {})
+        if mb_source.get('signature'):
+            family_name = mb_source['signature']
+        elif mb_source.get('malwareFamily'):
+            family_name = mb_source['malwareFamily']
+        elif vt_source.get('suggestedThreatLabel'):
+            # VT labels like "trojan.agent/generic" — extract family part
+            label = vt_source['suggestedThreatLabel']
+            parts = label.replace('/', '.').split('.')
+            if len(parts) >= 2:
+                family_name = parts[1] if parts[1].lower() not in ('generic', 'gen', 'agent') else parts[0]
+
+        if family_name and is_service_enabled('malpedia'):
+            malpedia_result = check_malpedia_family(family_name)
+            if 'error' not in malpedia_result:
+                results['sources']['malpedia'] = malpedia_result
+                results['summary']['totalSources'] += 1
+                if malpedia_result.get('attribution'):
+                    results['summary']['findings'].append(
+                        f"Malpedia: Attributed to {', '.join(malpedia_result['attribution'][:2])}"
+                    )
+                    results['riskReasons'].append({
+                        'category': 'APT Attribution',
+                        'description': f'Malware family "{family_name}" attributed to: {", ".join(malpedia_result["attribution"][:3])}',
+                        'severity': 'critical',
+                        'source': 'Malpedia',
+                        'score_contribution': 25
+                    })
+    except Exception as e:
+        print(f"[ThreatIntel] Malpedia enrichment error: {e}")
 
     if results['summary']['maliciousSources'] > 0:
         results['summary']['isMalicious'] = True

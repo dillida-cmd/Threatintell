@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Search, Hash, Shield, AlertTriangle, FileText, Tag } from 'lucide-react'
+import { Search, Hash, Shield, AlertTriangle, FileText, Tag, X } from 'lucide-react'
 import { lookupHash } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -72,6 +72,15 @@ export default function HashLookup() {
             <Search className="h-5 w-5" />
             <span>Lookup</span>
           </button>
+          {(hash || results || error) && (
+            <button
+              onClick={() => { setHash(''); setResults(null); setError(null); }}
+              className="btn btn-secondary"
+              title="Clear"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          )}
         </div>
       </div>
 

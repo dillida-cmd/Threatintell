@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Search, AlertTriangle, CheckCircle, Clock, FileText, Download } from 'lucide-react'
+import { Search, AlertTriangle, CheckCircle, Clock, FileText, Download, X } from 'lucide-react'
 import { downloadPdfReport, retrieveAnalysis } from '../api/client'
 import { defangUrl, defangIp, defangDomain } from '../utils/defang'
 
@@ -119,23 +119,34 @@ function RetrieveAnalysis() {
             </p>
           </div>
 
-          <button
-            onClick={handleRetrieve}
-            disabled={loading}
-            className="btn-primary w-full flex items-center justify-center gap-2"
-          >
-            {loading ? (
-              <>
-                <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
-                Retrieving...
-              </>
-            ) : (
-              <>
-                <Search className="h-4 w-4" />
-                Retrieve Analysis
-              </>
+          <div className="flex gap-3">
+            <button
+              onClick={handleRetrieve}
+              disabled={loading}
+              className="btn-primary flex-1 flex items-center justify-center gap-2"
+            >
+              {loading ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                  Retrieving...
+                </>
+              ) : (
+                <>
+                  <Search className="h-4 w-4" />
+                  Retrieve Analysis
+                </>
+              )}
+            </button>
+            {(entryRef || secretKey || result || error) && (
+              <button
+                onClick={() => { setEntryRef(''); setSecretKey(''); setResult(null); setError(null); }}
+                className="btn btn-secondary"
+                title="Clear"
+              >
+                <X className="h-5 w-5" />
+              </button>
             )}
-          </button>
+          </div>
         </div>
       </div>
 

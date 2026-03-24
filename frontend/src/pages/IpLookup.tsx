@@ -1,16 +1,23 @@
-import { useState } from 'react'
-import { Search, Globe, MapPin, Server, Shield, AlertTriangle, Wifi, Eye, Bot } from 'lucide-react'
-import { lookupIp } from '../api/client'
+import { useState, useEffect, lazy, Suspense } from 'react'
+import { Search, Globe, MapPin, Server, Shield, AlertTriangle, Wifi, Eye, Bot, Crosshair, X } from 'lucide-react'
+import { lookupIp, getMyLocation } from '../api/client'
 import RiskGauge from '../components/RiskGauge'
 import LoadingSpinner from '../components/LoadingSpinner'
 import AIValidation from '../components/AIValidation'
 import { defangIp, defangDomain } from '../utils/defang'
+
+const ThreatGlobe = lazy(() => import('../components/ThreatGlobe'))
 
 export default function IpLookup() {
   const [ip, setIp] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [results, setResults] = useState<any>(null)
+  const [userLocation, setUserLocation] = useState<any>(null)
+
+  useEffect(() => {
+    getMyLocation().then(setUserLocation).catch(() => {})
+  }, [])
 
   const handleLookup = async () => {
     if (!ip.trim()) return
@@ -75,6 +82,15 @@ export default function IpLookup() {
             <Search className="h-5 w-5" />
             <span>Investigate</span>
           </button>
+          {(ip || results || error) && (
+            <button
+              onClick={() => { setIp(''); setResults(null); setError(null); }}
+              className="btn btn-secondary"
+              title="Clear"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -172,6 +188,39 @@ export default function IpLookup() {
           {/* AI Risk Validation */}
           {threat.aiValidation && (
             <AIValidation validation={threat.aiValidation} />
+          )}
+
+          {/* Connection Trace Globe */}
+          {userLocation?.latitude && basic.location?.latitude && (
+            <div className="card">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-primary-600/20 rounded-lg">
+                  <Crosshair className="h-5 w-5 text-primary-500" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Connection Trace</h3>
+                  <p className="text-gray-400 text-sm">Geographic path from your location to {defangIp(basic.query || ip)}</p>
+                </div>
+              </div>
+              <Suspense fallback={<LoadingSpinner message="Loading globe..." />}>
+                <ThreatGlobe
+                  sourceLocation={{
+                    latitude: userLocation.latitude,
+                    longitude: userLocation.longitude,
+                    city: userLocation.city,
+                    ip: userLocation.ip,
+                  }}
+                  targetLocation={{
+                    latitude: basic.location.latitude,
+                    longitude: basic.location.longitude,
+                    city: basic.location.city,
+                    country: basic.location.country,
+                    ip: basic.query,
+                  }}
+                  riskScore={riskScore}
+                />
+              </Suspense>
+            </div>
           )}
 
           {/* Location & Network */}
