@@ -66,8 +66,54 @@ MITRE_PATTERNS = {
 class AIRiskValidator:
     """AI-powered risk score validator using pattern analysis and consensus"""
 
+    # Source names to strip from user-facing text
+    _SOURCE_PREFIXES = [
+        'VirusTotal: ', 'AbuseIPDB: ', 'URLhaus: ', 'Shodan: ', 'AlienVault: ',
+        'GreyNoise: ', 'URLScan.io: ', 'MalwareBazaar: ', 'IPQualityScore: ',
+        'ThreatFox: ', 'BGPView: ', 'Malpedia: ', 'MISP: ', 'DNSBL: ', 'WHOIS: ',
+        'IPQualityScore ', 'High IPQualityScore ',
+    ]
+
     def __init__(self):
         self.validation_history = []
+
+    def _sanitize_analysis(self, analysis: Dict) -> Dict:
+        """Remove source names from all user-facing text in the analysis"""
+        # Strip source prefixes from factor strings
+        for category in ['positive', 'negative', 'neutral']:
+            if category in analysis.get('factors', {}):
+                sanitized = []
+                for text in analysis['factors'][category]:
+                    for prefix in self._SOURCE_PREFIXES:
+                        if text.startswith(prefix):
+                            text = text[len(prefix):]
+                            # Capitalize first letter after stripping
+                            if text:
+                                text = text[0].upper() + text[1:]
+                            break
+                    sanitized.append(text)
+                analysis['factors'][category] = sanitized
+
+        # Strip from false positive indicators
+        if 'falsePositiveIndicators' in analysis:
+            sanitized = []
+            for text in analysis['falsePositiveIndicators']:
+                for prefix in self._SOURCE_PREFIXES:
+                    if text.startswith(prefix):
+                        text = text[len(prefix):]
+                        if text:
+                            text = text[0].upper() + text[1:]
+                        break
+                sanitized.append(text)
+            analysis['falsePositiveIndicators'] = sanitized
+
+        # Remove source field from threat indicators
+        if 'threatIndicators' in analysis:
+            for indicator in analysis['threatIndicators']:
+                if 'source' in indicator:
+                    del indicator['source']
+
+        return analysis
 
     def validate_ip_risk(self, results: Dict) -> Dict:
         """Validate and potentially adjust IP threat intelligence risk score"""
@@ -203,7 +249,7 @@ class AIRiskValidator:
         analysis = self._calculate_consensus_score(analysis, clean_sources, threat_sources, total_sources)
         analysis = self._cross_correlate_findings(analysis, results, 'ip')
 
-        return analysis
+        return self._sanitize_analysis(analysis)
 
     def validate_url_risk(self, results: Dict) -> Dict:
         """Validate and potentially adjust URL threat intelligence risk score"""
@@ -382,7 +428,7 @@ class AIRiskValidator:
         analysis = self._calculate_consensus_score(analysis, clean_sources, threat_sources, len(sources) + 2)
         analysis = self._cross_correlate_findings(analysis, results, 'url')
 
-        return analysis
+        return self._sanitize_analysis(analysis)
 
     def validate_hash_risk(self, results: Dict) -> Dict:
         """Validate and potentially adjust hash/file threat intelligence risk score"""
@@ -472,7 +518,7 @@ class AIRiskValidator:
         analysis = self._calculate_consensus_score(analysis, clean_sources, threat_sources, len(sources))
         analysis = self._cross_correlate_findings(analysis, results, 'hash')
 
-        return analysis
+        return self._sanitize_analysis(analysis)
 
     def validate_sandbox_risk(self, results: Dict) -> Dict:
         """Validate and potentially adjust sandbox analysis risk score"""
@@ -665,7 +711,7 @@ class AIRiskValidator:
 
         analysis['confidence'] = self._calculate_confidence(threat_score, clean_score, len(behaviors) + len(processes))
 
-        return analysis
+        return self._sanitize_analysis(analysis)
 
     def validate_file_analysis(self, results: Dict, file_type: str) -> Dict:
         """Validate risk for static file analysis (email, PDF, Office)"""
@@ -769,7 +815,7 @@ class AIRiskValidator:
         else:
             analysis['recommendation'] = 'LOW RISK: File appears safe'
 
-        return analysis
+        return self._sanitize_analysis(analysis)
 
     def _cross_correlate_findings(self, analysis: Dict, results: Dict, ioc_type: str) -> Dict:
         """Cross-correlate findings across sources for confidence enrichment"""

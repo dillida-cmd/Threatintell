@@ -445,12 +445,12 @@ function ThreatResultsBody({ results }: { results: any }) {
         </div>
       )}
 
-      {/* URLScan.io Results */}
+      {/* URL Scan Intelligence */}
       {sources.urlscanio && !sources.urlscanio.error && (
         <div className="card">
           <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
             <Search className="h-5 w-5 text-primary-500" />
-            URLScan.io
+            URL Scan Intelligence
           </h3>
 
           <div className="grid grid-cols-3 gap-4 mb-4">

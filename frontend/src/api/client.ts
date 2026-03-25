@@ -17,6 +17,12 @@ export const lookupIp = async (ip: string) => {
   }
 }
 
+// My Location (for globe)
+export const getMyLocation = async () => {
+  const response = await api.get('/my-location')
+  return response.data
+}
+
 // URL Lookup - Threat Intel
 export const lookupUrlThreat = async (url: string) => {
   const response = await api.post('/threat-intel/investigate/url', { url })

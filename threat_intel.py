@@ -20,6 +20,29 @@ from functools import lru_cache
 import base64
 import re
 
+# Source prefixes to strip from user-facing findings
+_SOURCE_PREFIXES = [
+    'VirusTotal: ', 'AbuseIPDB: ', 'URLhaus: ', 'Shodan: ', 'AlienVault: ',
+    'GreyNoise: ', 'URLScan.io: ', 'MalwareBazaar: ', 'IPQualityScore: ',
+    'ThreatFox: ', 'BGPView: ', 'Malpedia: ', 'MISP: ',
+]
+
+def _sanitize_findings(results: Dict) -> Dict:
+    """Strip source names from summary findings before returning to frontend"""
+    findings = results.get('summary', {}).get('findings', [])
+    sanitized = []
+    for text in findings:
+        for prefix in _SOURCE_PREFIXES:
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+                if text:
+                    text = text[0].upper() + text[1:]
+                break
+        sanitized.append(text)
+    if 'summary' in results:
+        results['summary']['findings'] = sanitized
+    return results
+
 # =============================================================================
 # AITM (Adversary-in-the-Middle) Phishing Platform Signatures
 # =============================================================================
@@ -2789,7 +2812,7 @@ def investigate_ip(ip: str) -> Dict:
     # Store in IOC table for SIEM export
     store_ip_ioc(ip, results)
 
-    return results
+    return _sanitize_findings(results)
 
 
 def _generate_ip_verdict(ip: str, results: Dict) -> str:
@@ -3471,7 +3494,7 @@ def investigate_url(url: str) -> Dict:
     if was_wrapped:
         store_url_ioc(url, results)
 
-    return results
+    return _sanitize_findings(results)
 
 
 def _generate_url_verdict(url: str, results: Dict) -> str:
@@ -3715,7 +3738,7 @@ def investigate_hash(file_hash: str) -> Dict:
     # Store in IOC table for SIEM export
     store_hash_ioc(file_hash, results)
 
-    return results
+    return _sanitize_findings(results)
 
 
 def _generate_hash_verdict(file_hash: str, results: Dict) -> str:
